@@ -4,7 +4,7 @@ from io import BytesIO
 import warnings
 import plotly.express as px
 import urllib.parse
-from fpdf import FPDF
+from fpdf import FPDF  # fpdf2 é importado como fpdf
 import traceback
 
 # Ignorar avisos para uma interface mais limpa
@@ -26,18 +26,19 @@ if 'figura_plotly' not in st.session_state:
 
 class PDF(FPDF):
     def header(self):
+        # Usa a fonte Liberation Sans que é instalada pelo packages.txt
+        self.set_font("LiberationSans", "B", 12)
         try:
             self.image("logo_GW.png", x=10, y=8, w=40)
         except FileNotFoundError:
-            self.set_font("Arial", "B", 12)
             self.cell(40, 10, "General Water", 0, 0, 'L')
-        self.set_font("Arial", "B", 20)
+        self.set_font("LiberationSans", "B", 20)
         self.cell(0, 10, "Relatório de Ativos Contábeis", 0, 1, 'C')
         self.ln(15)
 
     def footer(self):
         self.set_y(-15)
-        self.set_font("Arial", "I", 8)
+        self.set_font("LiberationSans", "I", 8)
         self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
 
 # --- FUNÇÕES DE LÓGICA ---
@@ -49,7 +50,7 @@ def formatar_valor(valor):
     except (ValueError, TypeError):
         return "R$ 0,00"
 
-# --- NOVA LÓGICA DE PROCESSAMENTO (ADAPTADA DO SEU CÓDIGO) ---
+# --- LÓGICA DE PROCESSAMENTO ADAPTADA ---
 
 
 CABECALHOS_INTERMEDIARIOS = ["Cod Base Bem", "Descr. Sint.",
@@ -57,15 +58,13 @@ CABECALHOS_INTERMEDIARIOS = ["Cod Base Bem", "Descr. Sint.",
 
 
 def limpar_valor(valor_str):
-    """Converte valor monetário em string para float."""
     try:
         return float(str(valor_str).replace('.', '').replace(',', '.'))
     except (ValueError, AttributeError):
-        return 0.0  # Retorna 0.0 para consistência nos cálculos
+        return 0.0
 
 
 def processar_linhas_do_arquivo(linhas_texto, nome_arquivo):
-    """Processa as linhas extraídas do Excel e retorna uma lista de dicionários."""
     dados = []
     conta_atual = ""
     descricao_conta_atual = ""
@@ -77,15 +76,13 @@ def processar_linhas_do_arquivo(linhas_texto, nome_arquivo):
 
         colunas = linha.split('\t')
 
-        # Tenta identificar a linha da conta contábil
         if len(colunas) >= 2 and colunas[0].startswith("1.2.3."):
             conta_atual = colunas[0]
             descricao_conta_atual = colunas[1]
             continue
 
-        # Tenta identificar a linha de valores "R$"
         elif colunas[0] == "R$":
-            if dados:  # Se houver um item anterior na lista para atualizar
+            if dados:
                 try:
                     item_anterior = dados[-1]
                     item_anterior["Valor original"] = limpar_valor(colunas[2])
@@ -94,59 +91,37 @@ def processar_linhas_do_arquivo(linhas_texto, nome_arquivo):
                     item_anterior["Deprec. do mês"] = limpar_valor(colunas[4])
                     item_anterior["Deprec. Acumulada"] = limpar_valor(
                         colunas[6])
-
-                    # Calcula o valor residual
-                    valor_atualizado = item_anterior["Valor atualizado"]
-                    deprec_acumulada = item_anterior["Deprec. Acumulada"]
-                    item_anterior["Valor Residual"] = valor_atualizado - \
-                        deprec_acumulada
-
+                    item_anterior["Valor Residual"] = item_anterior["Valor atualizado"] - \
+                        item_anterior["Deprec. Acumulada"]
                 except IndexError:
-                    continue  # Pula se a linha R$ não tiver colunas suficientes
+                    continue
 
-        # Tenta identificar uma linha de item de ativo
         elif len(colunas) >= 8 and colunas[0].isdigit():
             try:
-                # Converte data numérica do Excel para datetime
                 data_aquisicao = pd.to_datetime(
                     int(colunas[7]), unit='d', origin='1899-12-30', errors='coerce')
-
                 dados.append({
-                    "Arquivo": nome_arquivo,
-                    "Filial": colunas[0],
-                    "Conta contábil": conta_atual,
-                    "Descrição da conta": descricao_conta_atual,
-                    "Código do item": colunas[3],
-                    "Descrição do item": colunas[5],
-                    "Data de aquisição": data_aquisicao,
-                    # Inicializa valores que serão preenchidos pela linha "R$"
-                    "Valor original": 0.0,
-                    "Valor atualizado": 0.0,
-                    "Deprec. do mês": 0.0,
-                    "Deprec. Acumulada": 0.0,
-                    "Valor Residual": 0.0,
+                    "Arquivo": nome_arquivo, "Filial": colunas[0], "Conta contábil": conta_atual,
+                    "Descrição da conta": descricao_conta_atual, "Código do item": colunas[3],
+                    "Descrição do item": colunas[5], "Data de aquisição": data_aquisicao,
+                    "Valor original": 0.0, "Valor atualizado": 0.0, "Deprec. do mês": 0.0,
+                    "Deprec. Acumulada": 0.0, "Valor Residual": 0.0,
                 })
             except (ValueError, IndexError):
                 continue
-
     return dados
 
 
 def processar_planilha(file):
-    """Função principal que integra a nova lógica com o Streamlit."""
     try:
-        # Lê o arquivo Excel, tratando todas as células como texto
         df_raw = pd.read_excel(file, header=None, dtype=str)
-        # Concatena as células de cada linha com um tab, criando uma lista de strings
         linhas_texto = df_raw.fillna("").astype(
             str).agg('\t'.join, axis=1).tolist()
-
         dados_processados = processar_linhas_do_arquivo(
             linhas_texto, file.name)
 
         if dados_processados:
             df_final = pd.DataFrame(dados_processados)
-            # Garante que todas as colunas esperadas existam
             colunas_ordenadas = [
                 'Filial', 'Conta contábil', 'Descrição da conta', 'Data de aquisição',
                 'Código do item', 'Descrição do item', 'Valor original', 'Valor atualizado',
@@ -157,7 +132,6 @@ def processar_planilha(file):
             return df_final, None
         else:
             return pd.DataFrame(), f"Nenhum item individual foi encontrado no formato esperado em '{file.name}'."
-
     except Exception as e:
         st.error(f"Erro crítico ao processar o arquivo '{file.name}': {e}")
         st.code(traceback.format_exc())
@@ -166,18 +140,12 @@ def processar_planilha(file):
 
 def criar_pdf_completo(buffer, df_filtrado, fig_plotly):
     pdf = PDF(orientation='L', unit='mm', format='A4')
-    try:
-        pdf.add_font('Arial', '', 'fonts/arial.ttf', uni=True)
-        pdf.add_font('Arial', 'B', 'fonts/arialbd.ttf', uni=True)
-        pdf.set_font('Arial', '', 12)
-    except RuntimeError:
-        st.warning("Arquivos de fonte não encontrados. Usando fonte padrão.")
-        pdf.set_font('Helvetica', '', 12)
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
     if fig_plotly:
         try:
-            pdf.set_font("Arial", "B", 14)
+            pdf.set_font("LiberationSans", "B", 14)
             pdf.cell(0, 10, "Gráfico Analítico", 0, 1, 'L')
             img_bytes = fig_plotly.to_image(
                 format="png", width=1000, height=500, scale=2)
@@ -185,11 +153,11 @@ def criar_pdf_completo(buffer, df_filtrado, fig_plotly):
             pdf.image(img_buffer, x=10, y=pdf.get_y(), w=277)
             pdf.ln(135)
         except Exception as e:
-            pdf.set_font("Arial", "", 10)
+            pdf.set_font("LiberationSans", "", 10)
             pdf.multi_cell(
                 0, 10, f"Não foi possível renderizar o gráfico no PDF: {e}", 0, 'L')
 
-    pdf.set_font("Arial", "B", 14)
+    pdf.set_font("LiberationSans", "B", 14)
     pdf.cell(0, 10, "Dados Agregados por Filial e Descrição da Conta", 0, 1, 'L')
     pdf.ln(5)
 
@@ -198,7 +166,7 @@ def criar_pdf_completo(buffer, df_filtrado, fig_plotly):
     df_agregado = df_filtrado.groupby(['Filial', 'Descrição da conta'])[
         colunas_para_somar].sum().reset_index()
 
-    pdf.set_font("Arial", "B", 9)
+    pdf.set_font("LiberationSans", "B", 9)
     pdf.set_fill_color(230, 230, 230)
     col_widths = {'Filial': 60, 'Descrição da conta': 100,
                   'Valor atualizado': 38, 'Deprec. Acumulada': 40, 'Valor Residual': 39}
@@ -206,7 +174,7 @@ def criar_pdf_completo(buffer, df_filtrado, fig_plotly):
         pdf.cell(col_widths[col_name], 10, col_name, 1, 0, 'C', fill=True)
     pdf.ln()
 
-    pdf.set_font("Arial", "", 8)
+    pdf.set_font("LiberationSans", "", 8)
     for _, row in df_agregado.iterrows():
         pdf.cell(col_widths['Filial'], 10, str(row['Filial']), 1, 0, 'L')
         pdf.cell(col_widths['Descrição da conta'], 10,
