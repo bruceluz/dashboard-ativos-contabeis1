@@ -79,7 +79,7 @@ def corrigir_filiais_nao_identificadas(df_arquivo):
             'Não Identificado', filial_predominante)
     return df_arquivo
 
-# Função de processamento com a correção aplicada
+# Função de processamento com a lógica de salvamento corrigida
 
 
 def processar_planilha(file):
@@ -97,8 +97,6 @@ def processar_planilha(file):
         ]
 
         for sheet_name in xl.sheet_names:
-            # ### CORREÇÃO APLICADA AQUI ###
-            # Lê a aba 'sheet_name' do objeto de arquivo 'xl'
             sheet_df = pd.read_excel(
                 xl, sheet_name=sheet_name, header=None, dtype=str)
 
@@ -118,9 +116,11 @@ def processar_planilha(file):
                     continue
 
                 if str(row.iloc[0]).startswith('1.2.3.'):
+                    # Salva o ativo anterior antes de começar um novo
                     if dados_ativo_atual and dados_ativo_atual.get('Cod Base Bem'):
                         dados_processados.append(dados_ativo_atual)
 
+                    # Inicia um novo ativo
                     dados_ativo_atual = {
                         col: None for col in colunas_desejadas}
                     dados_ativo_atual['Filial'] = filial_atual
@@ -141,7 +141,6 @@ def processar_planilha(file):
                 if not dados_ativo_atual:
                     continue
 
-                # Extração de dados baseada em rótulos na linha
                 if 'Centro de Custo:' in row_str:
                     dados_ativo_atual['C Custo'] = row_str.split(
                         'Centro de Custo:')[1].strip().split(' ')[0]
@@ -186,9 +185,10 @@ def processar_planilha(file):
                     dados_ativo_atual['Valor Residual'] = valor_atualizado - \
                         deprec_acumulada
 
-                    if dados_ativo_atual.get('Cod Base Bem'):
-                        dados_processados.append(dados_ativo_atual)
-                    dados_ativo_atual = {}
+            # ### CORREÇÃO CRÍTICA ###
+            # Salva o último ativo da planilha após o término do loop
+            if dados_ativo_atual and dados_ativo_atual.get('Cod Base Bem'):
+                dados_processados.append(dados_ativo_atual)
 
         if dados_processados:
             df_final = pd.DataFrame(dados_processados)
@@ -322,7 +322,7 @@ if uploaded_files:
     if all_data:
         dados_combinados = pd.concat(all_data, ignore_index=True)
         st.success(
-            f"Processamento concluído! {len(all_data)} arquivo(s) válidos.")
+            f"Processamento concluído! {len(all_data)} arquivo(s) válidos e {len(dados_combinados)} registros encontrados.")
 
         col1, col2, col3 = st.columns(3)
         arquivos_options = sorted(dados_combinados['Arquivo'].unique())
@@ -510,4 +510,4 @@ else:
     st.info("Aguardando o upload dos arquivos para iniciar o processamento.")
 
 st.markdown("---")
-st.caption("Desenvolvido para General Water | v32.0 - Suporte via Teams")
+st.caption("Desenvolvido para General Water | v33.0 - Suporte via Teams")
