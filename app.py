@@ -86,100 +86,123 @@ def limpar_valor(valor_str):
         return 0.0
 
 
-def extrair_quantidade(texto):
-    """Extrai a quantidade do texto como 'QUANTIDADE XX'"""
-    try:
-        match = re.search(r'QUANTIDADE\s+(\d+)', texto, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-        return 1  # Default para 1 se não encontrar
-    except:
-        return 1
+def processar_linhas_detalhadas(linhas_texto, nome_arquivo):
+    """Processa arquivos com dados detalhados por item"""
+    dados_finais = []
+    conta_atual, descricao_conta_atual = "", ""
+    dados_item_atual = None
+    filial_atual = ""
 
+    for linha in linhas_texto:
+        linha_strip = linha.strip()
 
-def processar_planilha_sintetica(file_content, file_name):
-    """Processa arquivos com dados sintéticos (totais por conta)"""
-    try:
-        # Lê todas as planilhas do arquivo
-        xls = pd.ExcelFile(BytesIO(file_content))
-        dados_finais = []
+        if not linha_strip:
+            continue
 
-        for sheet_name in xls.sheet_names:
-            if 'Parametros' in sheet_name:
-                continue  # Pula a planilha de parâmetros
+        # Identifica linha de conta contábil
+        if '1.2.3.' in linha_strip and len(linha_strip.split()) >= 2:
+            partes = linha_strip.split()
+            for i, parte in enumerate(partes):
+                if '1.2.3.' in parte:
+                    conta_atual = parte
+                    descricao_conta_atual = ' '.join(partes[i+1:])
+                    break
 
-            df = pd.read_excel(BytesIO(file_content),
-                               sheet_name=sheet_name, header=None)
-            df = df.astype(str).fillna('')
+        # Identifica linha de filial
+        elif 'Filial :' in linha_strip:
+            filial_atual = linha_strip.replace(
+                'Filial :', '').split('-')[0].strip()
 
-            conta_atual = ""
-            descricao_conta = ""
-            filial = ""
-            quantidade = 1
+        # Identifica linha de dados detalhados (começa com código numérico de filial)
+        elif linha_strip.split() and linha_strip.split()[0].isdigit() and len(linha_strip.split()) >= 10:
+            partes = linha_strip.split()
+            try:
+                # Verifica se é uma linha de dados válida (tem data de aquisição)
+                if len(partes) >= 8 and '/' in partes[7] and len(partes[7].split('/')) == 3:
+                    data_aquisicao = pd.to_datetime(
+                        partes[7], format='%d/%m/%Y', errors='coerce')
+                    if pd.notna(data_aquisicao):
+                        dados_item_atual = {
+                            "Arquivo": nome_arquivo,
+                            "Filial": partes[0],
+                            "Conta contábil": conta_atual,
+                            "Descrição da conta": descricao_conta_atual,
+                            "Data de aquisição": data_aquisicao,
+                            "Código do item": partes[2],
+                            "Código do sub item": partes[3],
+                            "Descrição do item": ' '.join(partes[5:7]) if len(partes) > 7 else partes[5],
+                            "Valor original": 0.0,
+                            "Valor atualizado": 0.0,
+                            "Deprec. do mês": 0.0,
+                            "Deprec. do exercício": 0.0,
+                            "Deprec. Acumulada": 0.0,
+                            "Valor Residual": 0.0
+                        }
+            except (IndexError, ValueError):
+                dados_item_atual = None
 
-            for idx, row in df.iterrows():
-                linha = ' '.join([str(cell)
-                                 for cell in row if str(cell) != 'nan'])
+        # Identifica linha de valores em R$ (vinculada ao item anterior)
+        elif linha_strip.startswith('R$') and dados_item_atual:
+            partes = linha_strip.split()
+            try:
+                if len(partes) >= 8:
+                    dados_item_atual["Valor original"] = limpar_valor(
+                        partes[2])
+                    dados_item_atual["Valor atualizado"] = limpar_valor(
+                        partes[3])
+                    dados_item_atual["Deprec. do mês"] = limpar_valor(
+                        partes[4])
+                    dados_item_atual["Deprec. do exercício"] = limpar_valor(
+                        partes[5])
+                    dados_item_atual["Deprec. Acumulada"] = limpar_valor(
+                        partes[6])
+                    dados_item_atual["Valor Residual"] = dados_item_atual["Valor atualizado"] - \
+                        dados_item_atual["Deprec. Acumulada"]
 
-                # Identifica linha de conta contábil
-                if '1.2.3.' in linha and any(term in linha for term in ['ESTACAO', 'Veiculos', 'Maquinas', 'Computadores', 'SOFTWARE', 'Moveis', 'BENF', 'DIREITO']):
-                    partes = linha.split()
-                    for i, parte in enumerate(partes):
-                        if '1.2.3.' in parte:
-                            conta_atual = parte
-                            descricao_conta = ' '.join(partes[i+1:])
-                            break
+                    dados_finais.append(dados_item_atual)
+                    dados_item_atual = None
+            except (IndexError, ValueError):
+                dados_item_atual = None
 
-                # Identifica linha de filial
-                elif 'Filial :' in linha:
-                    filial = linha.replace('Filial :', '').strip()
-
-                # Identifica linha de quantidade
-                elif 'QUANTIDADE' in linha.upper():
-                    quantidade = extrair_quantidade(linha)
-
-                # Identifica linha de valores em R$
-                elif linha.startswith('R$') or (len(linha.split()) > 3 and linha.split()[0] == 'R$'):
-                    partes = linha.split()
-                    if len(partes) >= 8:  # Garante que temos valores suficientes
-                        try:
-                            dados_item = {
-                                "Arquivo": file_name,
-                                "Filial": filial,
-                                "Conta contábil": conta_atual,
-                                "Descrição da conta": descricao_conta,
-                                "Quantidade": quantidade,
-                                "Valor original": limpar_valor(partes[2]),
-                                "Valor atualizado": limpar_valor(partes[3]),
-                                "Deprec. do mês": limpar_valor(partes[4]),
-                                "Deprec. Acumulada": limpar_valor(partes[6]),
-                                "Valor Residual": limpar_valor(partes[3]) - limpar_valor(partes[6]),
-                                "Planilha": sheet_name
-                            }
-                            dados_finais.append(dados_item)
-                        except (IndexError, ValueError) as e:
-                            continue
-
-        if dados_finais:
-            df_final = pd.DataFrame(dados_finais)
-            return df_final, None
-        else:
-            return pd.DataFrame(), f"Nenhum dado sintético foi encontrado em '{file_name}'."
-
-    except Exception as e:
-        return pd.DataFrame(), f"Erro ao processar '{file_name}': {e}\n{traceback.format_exc()}"
+    return dados_finais
 
 # --- FUNÇÃO DE PROCESSAMENTO PRINCIPAL ---
 
 
 @st.cache_data
 def processar_planilha(file_content, file_name):
-    return processar_planilha_sintetica(file_content, file_name)
+    """Processa arquivos Excel com dados detalhados"""
+    try:
+        # Lê o arquivo Excel diretamente para um DataFrame do pandas
+        df_raw = pd.read_excel(BytesIO(file_content),
+                               header=None, engine='openpyxl')
+        df_raw = df_raw.astype(str).fillna('')
 
-# --- RESTANTE DO CÓDIGO PERMANECE IGUAL ---
-# [O restante do código da interface permanece exatamente como estava]
+        # Transforma cada linha do DataFrame em uma única string
+        linhas_texto = df_raw.apply(lambda row: ' '.join(row), axis=1).tolist()
+
+        dados_processados = processar_linhas_detalhadas(
+            linhas_texto, file_name)
+
+        if dados_processados:
+            df_final = pd.DataFrame(dados_processados)
+            # Ordena as colunas conforme solicitado
+            colunas_ordenadas = [
+                'Filial', 'Conta contábil', 'Descrição da conta', 'Data de aquisição',
+                'Código do item', 'Código do sub item', 'Descrição do item',
+                'Valor original', 'Valor atualizado', 'Deprec. do mês',
+                'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual', 'Arquivo'
+            ]
+            df_final = df_final.reindex(
+                columns=colunas_ordenadas, fill_value="")
+            return df_final, None
+        else:
+            return pd.DataFrame(), f"Nenhum item de ativo detalhado foi encontrado em '{file_name}'."
+    except Exception as e:
+        return pd.DataFrame(), f"Erro crítico ao processar '{file_name}': {e}\n{traceback.format_exc()}"
 
 
+# --- INTERFACE DO USUÁRIO ---
 st.title("📊 Dashboard de Ativos Contábeis")
 
 with st.sidebar:
@@ -223,8 +246,73 @@ if uploaded_files:
         st.success(
             f"Processamento finalizado! {len(all_data)} arquivo(s) carregados, totalizando {len(dados_combinados):,} registros.")
 
-        # [O restante do código de interface permanece igual...]
-        # ... (filtros, métricas, tabelas, gráficos, etc.)
+        st.markdown("### Filtros")
+        col1, col2, col3 = st.columns(3)
+        arquivos_options = sorted(dados_combinados['Arquivo'].unique())
+        filiais_options = sorted(dados_combinados['Filial'].unique())
+        categorias_options = sorted(
+            dados_combinados['Descrição da conta'].unique())
+
+        with col1:
+            selecao_arquivo = st.multiselect(
+                "Filtrar por Arquivo:", arquivos_options, default=arquivos_options)
+        with col2:
+            selecao_filial = st.multiselect(
+                "Filtrar por Filial:", filiais_options, default=filiais_options)
+        with col3:
+            selecao_categoria = st.multiselect(
+                "Filtrar por Descrição da Conta:", categorias_options, default=categorias_options)
+
+        dados_filtrados = dados_combinados[
+            (dados_combinados['Arquivo'].isin(selecao_arquivo)) &
+            (dados_combinados['Filial'].isin(selecao_filial)) &
+            (dados_combinados['Descrição da conta'].isin(selecao_categoria))
+        ]
+
+        st.markdown("### Resumo dos Dados Filtrados")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Registros Filtrados", f"{len(dados_filtrados):,}")
+        col2.metric("Valor Total Atualizado", formatar_valor(
+            dados_filtrados["Valor atualizado"].sum()))
+        col3.metric("Depreciação Acumulada", formatar_valor(
+            dados_filtrados["Deprec. Acumulada"].sum()))
+        col4.metric("Valor Residual Total", formatar_valor(
+            dados_filtrados["Valor Residual"].sum()))
+
+        tab1, tab2, tab3 = st.tabs(
+            ["Dados Detalhados", "Análise por Filial", "Análise por Descrição da Conta"])
+
+        with tab1:
+            df_display = dados_filtrados.copy()
+            colunas_formatar = ['Valor original', 'Valor atualizado', 'Deprec. do mês',
+                                'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual']
+            for col in colunas_formatar:
+                if col in df_display.columns:
+                    df_display[col] = df_display[col].apply(formatar_valor)
+            st.dataframe(df_display, use_container_width=True, height=500)
+
+        with tab2:
+            analise_filial = dados_filtrados.groupby('Filial').agg(
+                Contagem=('Arquivo', 'count'),
+                Valor_Total=('Valor atualizado', 'sum')
+            ).reset_index()
+            st.dataframe(analise_filial, use_container_width=True,
+                         column_config={"Valor_Total": st.column_config.NumberColumn(format="R$ %.2f")})
+
+        with tab3:
+            analise_categoria = dados_filtrados.groupby('Descrição da conta').agg(
+                Contagem=('Arquivo', 'count'),
+                Valor_Total=('Valor atualizado', 'sum')
+            ).reset_index()
+            st.dataframe(analise_categoria, use_container_width=True,
+                         column_config={"Valor_Total": st.column_config.NumberColumn(format="R$ %.2f")})
+
+        # ... (restante do código para gráficos e exportação)
+
+    if errors:
+        st.warning("Avisos durante o processamento:")
+        for error_msg in errors:
+            st.error(error_msg)
 
 else:
     st.info(
