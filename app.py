@@ -7,17 +7,19 @@ import urllib.parse
 from fpdf import FPDF
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+import traceback  # Import para rastreamento de erros detalhado
 
 warnings.filterwarnings('ignore')
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="Dashboard de Ativos Contábeis",
-    page_icon=" ",
+    page_icon="📊",
     layout="wide"
 )
 
 # --- INICIALIZAÇÃO DO SESSION STATE ---
+# (sem alterações aqui)
 if 'figura_plotly' not in st.session_state:
     st.session_state.figura_plotly = None
 if 'dados_grafico' not in st.session_state:
@@ -86,13 +88,21 @@ def processar_planilha(file):
         dados_processados = []
 
         for sheet_name in xl.sheet_names:
+            # Adicionando log para saber qual aba está sendo processada
+            st.info(f"Lendo a aba '{sheet_name}' do arquivo '{file.name}'...")
+
             sheet_df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
             filial_atual = "Não Identificado"
             conta_contabil_atual = "Não Identificado"
             descricao_conta_atual = "Não Identificado"
-            last_data_row_info = {}
+            item_temporario = None
 
             for idx, row in sheet_df.iterrows():
+                # Se um item foi encontrado mas a próxima linha não foi 'R$', ele deve ser descartado
+                # para evitar associar valores à linha errada.
+                if item_temporario and (not pd.notna(row.iloc[0]) or str(row.iloc[0]).strip() != 'R$'):
+                    item_temporario = None
+
                 # Identificar Filial
                 if pd.notna(row.iloc[0]) and 'Filial :' in str(row.iloc[0]):
                     nome_extraido = str(row.iloc[0]).split(
@@ -105,88 +115,70 @@ def processar_planilha(file):
                     descricao_conta_atual = str(
                         row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
 
-                # Identificar linhas de dados (onde a Filial e o Código do Item estão presentes)
+                # Identificar linhas de dados do item
                 elif pd.notna(row.iloc[0]) and str(row.iloc[0]).strip().isdigit() and len(str(row.iloc[0]).strip()) == 6 and \
                         pd.notna(row.iloc[2]) and str(row.iloc[2]).strip().isdigit():
 
-                    # Extrair dados das colunas solicitadas
-                    filial_item = str(row.iloc[0]).strip()  # Coluna A
-                    codigo_item = str(row.iloc[2]).strip()  # Coluna C
                     data_aquisicao = pd.to_datetime(
-                        row.iloc[7], errors='coerce')  # Coluna H
+                        row.iloc[7], errors='coerce')
 
-                    # Novos campos solicitados
-                    codigo_sub_item = str(row.iloc[9]).strip() if pd.notna(
-                        row.iloc[9]) else ""  # Coluna J
-                    descricao_item = str(row.iloc[3]).strip() if pd.notna(
-                        row.iloc[3]) else ""  # Coluna D
-
-                    # Filtrar por data de aquisição
                     if pd.notna(data_aquisicao) and data_aquisicao >= pd.to_datetime('1990-01-01'):
-                        last_data_row_info = {
-                            'Arquivo': file.name,
-                            'Filial': filial_atual,
-                            'Conta contábil': conta_contabil_atual,
-                            'Descrição da conta': descricao_conta_atual,
-                            'Data de aquisição': data_aquisicao,
-                            'Código do item': codigo_item,
-                            'Código do sub item': codigo_sub_item,
-                            'Descrição do item': descricao_item,
-                            'Valor original': 0.0,
-                            'Valor atualizado': 0.0,
-                            'Deprec. do mês': 0.0,
-                            'Deprec. do exercício': 0.0,
-                            'Deprec. Acumulada': 0.0,
-                            'Valor Residual': 0.0
+                        item_temporario = {
+                            'Arquivo': file.name, 'Filial': filial_atual,
+                            'Conta contábil': conta_contabil_atual, 'Descrição da conta': descricao_conta_atual,
+                            'Data de aquisição': data_aquisicao, 'Código do item': str(row.iloc[2]).strip(),
+                            'Código do sub item': str(row.iloc[9]).strip() if pd.notna(row.iloc[9]) else "",
+                            'Descrição do item': str(row.iloc[3]).strip() if pd.notna(row.iloc[3]) else ""
                         }
 
-                # Identificar linha de valores 'R$'
-                elif pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() == 'R$':
-                    if last_data_row_info:  # Se houver uma linha de dados anterior para associar
-                        valores = [converter_valor(v) for v in row.iloc[1:8]]
+                # Identificar linha de valores 'R$' e associar ao item temporário
+                elif item_temporario and pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() == 'R$':
+                    valores = [converter_valor(v) for v in row.iloc[1:8]]
 
-                        # Preencher os valores financeiros
-                        last_data_row_info['Valor original'] = valores[1] if len(
-                            valores) > 1 else 0
-                        last_data_row_info['Valor atualizado'] = valores[2] if len(
-                            valores) > 2 else 0
-                        last_data_row_info['Deprec. do mês'] = valores[3] if len(
-                            valores) > 3 else 0
-                        last_data_row_info['Deprec. do exercício'] = valores[4] if len(
-                            valores) > 4 else 0
-                        last_data_row_info['Deprec. Acumulada'] = valores[5] if len(
-                            valores) > 5 else 0
-                        last_data_row_info['Valor Residual'] = last_data_row_info['Valor atualizado'] - \
-                            last_data_row_info['Deprec. Acumulada']
+                    item_temporario['Valor original'] = valores[1] if len(
+                        valores) > 1 else 0.0
+                    item_temporario['Valor atualizado'] = valores[2] if len(
+                        valores) > 2 else 0.0
+                    item_temporario['Deprec. do mês'] = valores[3] if len(
+                        valores) > 3 else 0.0
+                    item_temporario['Deprec. do exercício'] = valores[4] if len(
+                        valores) > 4 else 0.0
+                    item_temporario['Deprec. Acumulada'] = valores[5] if len(
+                        valores) > 5 else 0.0
 
-                        # Adicionar à lista de dados processados
-                        dados_processados.append(last_data_row_info)
-                        last_data_row_info = {}  # Reset para a próxima linha de dados
+                    dados_processados.append(item_temporario)
+                    item_temporario = None  # Reseta para o próximo item
 
         if dados_processados:
+            st.success(
+                f"Dados extraídos com sucesso de '{file.name}'. Total de {len(dados_processados)} registros.")
             df_final = pd.DataFrame(dados_processados)
-            # Reordenar as colunas conforme solicitado
-            colunas_ordenadas = [
-                'Filial',
-                'Conta contábil',
-                'Descrição da conta',
-                'Data de aquisição',
-                'Código do item',
-                'Código do sub item',
-                'Descrição do item',
-                'Valor original',
-                'Valor atualizado',
-                'Deprec. do mês',
-                'Deprec. do exercício',
-                'Deprec. Acumulada',
-                'Valor Residual'
-            ]
-            df_final = df_final[colunas_ordenadas]
-            return corrigir_filiais_nao_identificadas(df_final), None
-        return None, f"Nenhum dado relevante encontrado em {file.name}."
-    except Exception as e:
-        return None, f"Erro crítico ao processar {file.name}: {e}"
+            df_final['Valor Residual'] = df_final['Valor atualizado'] - \
+                df_final['Deprec. Acumulada']
 
+            colunas_ordenadas = [
+                'Filial', 'Conta contábil', 'Descrição da conta', 'Data de aquisição',
+                'Código do item', 'Código do sub item', 'Descrição do item',
+                'Valor original', 'Valor atualizado', 'Deprec. do mês',
+                'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual', 'Arquivo'
+            ]
+            df_final = df_final.reindex(columns=colunas_ordenadas)
+            return corrigir_filiais_nao_identificadas(df_final), None
+
+        return pd.DataFrame(), f"Nenhum dado relevante encontrado no formato esperado em {file.name}."
+    except Exception as e:
+        # Captura e exibe o erro detalhado
+        st.error(
+            f"Ocorreu um erro crítico ao processar o arquivo {file.name}.")
+        st.error(f"Detalhes do erro: {e}")
+        # Mostra o traceback completo para depuração
+        st.code(traceback.format_exc())
+        return pd.DataFrame(), f"Erro crítico ao processar {file.name}."
+
+
+# --- O RESTANTE DO CÓDIGO (PDF, ESTRUTURA DA APLICAÇÃO) PERMANECE O MESMO ---
+# Cole o restante do seu código a partir daqui.
+# A função criar_pdf_completo e a estrutura principal do Streamlit não precisam de alterações.
 
 def criar_pdf_completo(buffer, df_filtrado, dados_grafico, tipo_grafico, eixo_x, eixos_y):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
@@ -201,18 +193,14 @@ def criar_pdf_completo(buffer, df_filtrado, dados_grafico, tipo_grafico, eixo_x,
     pdf.cell(0, 10, "Relatório de Ativos Contábeis", 0, 1, 'C')
     pdf.ln(15)
 
-    if dados_grafico is not None:
+    if dados_grafico is not None and not dados_grafico.empty:
         try:
             fig, ax = plt.subplots(figsize=(11, 5))
 
             if tipo_grafico in ['Barras', 'Linhas']:
                 df_plot = dados_grafico.set_index(eixo_x)
-                df_plot.plot(
-                    kind='bar' if tipo_grafico == 'Barras' else 'line',
-                    ax=ax,
-                    rot=45,
-                    grid=True
-                )
+                df_plot[eixos_y].plot(
+                    kind='bar' if tipo_grafico == 'Barras' else 'line', ax=ax, rot=45, grid=True)
                 ax.set_title(f'Análise por {eixo_x}')
                 ax.set_ylabel('Valores (R$)')
                 ax.yaxis.set_major_formatter(
@@ -221,21 +209,15 @@ def criar_pdf_completo(buffer, df_filtrado, dados_grafico, tipo_grafico, eixo_x,
 
             elif tipo_grafico == 'Pizza':
                 metrica_unica = eixos_y[0]
-                ax.pie(
-                    dados_grafico[metrica_unica],
-                    labels=dados_grafico[eixo_x],
-                    autopct='%1.1f%%',
-                    startangle=90
-                )
+                ax.pie(dados_grafico[metrica_unica],
+                       labels=dados_grafico[eixo_x], autopct='%1.1f%%', startangle=90)
                 ax.set_title(f'Distribuição de {metrica_unica} por {eixo_x}')
                 ax.axis('equal')
 
             plt.tight_layout()
-
             img_buffer = BytesIO()
             fig.savefig(img_buffer, format='png', dpi=300)
             img_buffer.seek(0)
-
             pdf.set_font("Arial", "B", 14)
             pdf.cell(0, 10, "Gráfico Analítico", 0, 1, 'L')
             pdf.image(img_buffer, x=None, y=None, w=277)
@@ -249,7 +231,7 @@ def criar_pdf_completo(buffer, df_filtrado, dados_grafico, tipo_grafico, eixo_x,
             plt.close(fig)
 
     pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, "Dados Agregados por Filial e Categoria", 0, 1, 'L')
+    pdf.cell(0, 10, "Dados Agregados por Filial e Descrição da Conta", 0, 1, 'L')
     pdf.ln(5)
     colunas_para_somar = ['Valor atualizado',
                           'Deprec. Acumulada', 'Valor Residual']
@@ -257,8 +239,8 @@ def criar_pdf_completo(buffer, df_filtrado, dados_grafico, tipo_grafico, eixo_x,
         colunas_para_somar].sum().reset_index()
     for col in colunas_para_somar:
         df_agregado[col] = df_agregado[col].apply(formatar_valor)
-    col_widths = {'Filial': 60, 'Descrição da conta': 100, 'Valor atualizado': 35,
-                  'Deprec. Acumulada': 40, 'Valor Residual': 35}
+    col_widths = {'Filial': 60, 'Descrição da conta': 100,
+                  'Valor atualizado': 35, 'Deprec. Acumulada': 40, 'Valor Residual': 35}
     pdf.set_font("Arial", "B", 9)
     for col_name in col_widths.keys():
         pdf.cell(col_widths[col_name], 10, col_name, 1, 0, 'C')
@@ -296,21 +278,30 @@ uploaded_files = st.file_uploader("Escolha os arquivos Excel de ativos", type=[
 
 if uploaded_files:
     all_data, errors = [], []
-    progress_bar = st.progress(0, text="Iniciando...")
+    # A barra de progresso será atualizada dentro do loop principal
+    progress_bar_placeholder = st.empty()
+    status_text_placeholder = st.empty()
+
     for i, file in enumerate(uploaded_files):
-        progress_bar.progress((i + 1) / len(uploaded_files),
-                              text=f"Processando: {file.name}")
+        progress_bar_placeholder.progress(
+            (i) / len(uploaded_files), text=f"Iniciando processamento de: {file.name}")
         dados, erro = processar_planilha(file)
         if dados is not None and not dados.empty:
             all_data.append(dados)
         if erro:
             errors.append(erro)
+        progress_bar_placeholder.progress(
+            (i + 1) / len(uploaded_files), text=f"Finalizado: {file.name}")
+
+    progress_bar_placeholder.empty()
+    status_text_placeholder.empty()
 
     if all_data:
         dados_combinados = pd.concat(all_data, ignore_index=True)
         st.success(
-            f"Processamento concluído! {len(all_data)} arquivo(s) válidos.")
+            f"Processamento concluído! {len(all_data)} arquivo(s) válidos carregados.")
 
+        # O resto da interface do usuário...
         col1, col2, col3 = st.columns(3)
         arquivos_options = sorted(dados_combinados['Arquivo'].unique())
         filiais_options = sorted(dados_combinados['Filial'].unique())
@@ -348,8 +339,11 @@ if uploaded_files:
             ["Dados Detalhados", "Análise por Filial", "Análise por Descrição da Conta"])
         with tab1:
             df_display = dados_filtrados.copy()
-            for col in ['Valor original', 'Valor atualizado', 'Deprec. do mês', 'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual']:
-                df_display[col] = df_display[col].apply(formatar_valor)
+            colunas_formatar = ['Valor original', 'Valor atualizado', 'Deprec. do mês',
+                                'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual']
+            for col in colunas_formatar:
+                if col in df_display.columns:
+                    df_display[col] = df_display[col].apply(formatar_valor)
             st.dataframe(df_display, use_container_width=True, height=500)
         with tab2:
             analise_filial = dados_filtrados.groupby('Filial').agg(Contagem=(
@@ -450,11 +444,14 @@ if uploaded_files:
                 mime="application/pdf"
             )
 
-    elif errors:
+    if errors:  # Exibe os erros coletados no final
+        st.warning(
+            "Alguns arquivos não puderam ser processados ou não continham dados válidos:")
         for error_msg in errors:
             st.error(error_msg)
-    else:
-        st.info("Nenhum arquivo carregado ou dados processados.")
+
+    if not all_data and not errors:
+        st.info("Nenhum dado válido foi encontrado nos arquivos carregados.")
 
 else:
     st.info("Por favor, carregue seus arquivos Excel para começar.")
