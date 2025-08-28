@@ -29,6 +29,7 @@ if 'figura_plotly' not in st.session_state:
 
 class PDF(FPDF):
     def header(self):
+        # Tenta usar uma fonte específica, mas recorre a uma padrão se não encontrada
         font_path = 'LiberationSans-Regular.ttf'
         font_name = "LiberationSans"
         fallback_font = "Arial"
@@ -66,6 +67,7 @@ class PDF(FPDF):
 
 
 def formatar_valor(valor):
+    """Formata um número para o padrão monetário brasileiro (R$)."""
     try:
         return f"R$ {float(valor):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
     except (ValueError, TypeError):
@@ -73,13 +75,14 @@ def formatar_valor(valor):
 
 
 def limpar_valor(valor_str):
+    """Converte uma string monetária (ex: '1.234,56') para float."""
     try:
         s = str(valor_str).strip()
-        if s == '-' or s == '' or s.lower() == 'nan' or s == 'None':
+        if s in ('-', '', 'nan', 'None'):
             return 0.0
-        # Remove caracteres não numéricos, exceto ponto e vírgula
+        # Remove caracteres não numéricos, exceto ponto, vírgula e sinal negativo
         s = re.sub(r'[^\d,.-]', '', s)
-        # Substitui vírgula por ponto para conversão
+        # Padroniza para o formato americano (ponto como decimal) antes de converter
         s = s.replace('.', '').replace(',', '.')
         return float(s)
     except (ValueError, AttributeError, TypeError):
@@ -87,83 +90,49 @@ def limpar_valor(valor_str):
 
 
 def processar_linhas_detalhadas(linhas_texto, nome_arquivo):
-    """Processa arquivos com dados detalhados por item no formato específico da planilha"""
+    """Processa o conteúdo de um arquivo texto para extrair dados de ativos."""
     dados_finais = []
     conta_atual, descricao_conta_atual = "", ""
     dados_item_atual = None
-    filial_atual = ""
 
-    # Variáveis para rastrear o contexto atual
-    cod_base_bem_atual = ""
-    codigo_item_atual = ""
-    tipo_ativo_atual = ""
-    descr_sint_atual = ""
-    tipo_depr_atual = ""
-    data_aquisicao_atual = ""
-
-    for i, linha in enumerate(linhas_texto):
+    for linha in linhas_texto:
         linha_strip = linha.strip()
-
         if not linha_strip:
             continue
 
-        # Identifica linha de conta contábil (ex: "1.2.3.02.010001 ESTACAO DE TRATAMENTO AGUA")
-        if '1.2.3.' in linha_strip and len(linha_strip.split()) >= 2:
-            partes = linha_strip.split()
-            for j, parte in enumerate(partes):
-                if '1.2.3.' in parte:
-                    conta_atual = parte
-                    descricao_conta_atual = ' '.join(partes[j+1:])
-                    break
+        try:
+            # Identifica linha de conta contábil (ex: "1.2.3.02.010001 ESTACAO...")
+            if '1.2.3.' in linha_strip and len(linha_strip.split()) >= 2:
+                partes = linha_strip.split()
+                for j, parte in enumerate(partes):
+                    if '1.2.3.' in parte:
+                        conta_atual = parte
+                        descricao_conta_atual = ' '.join(partes[j+1:])
+                        break
 
-        # Identifica linha de cabeçalho com metadados (ex: "Filial | C Custo | Cod Base Bem | ...")
-        elif linha_strip.startswith('Filial') and 'C Custo' in linha_strip:
-            continue  # Pula linha de cabeçalho
+            # Identifica linha de dados detalhados (começa com código numérico de filial)
+            elif linha_strip.split() and linha_strip.split()[0].isdigit() and len(linha_strip.split()) >= 8:
+                partes = linha_strip.split()
+                # Extrai os dados da linha do item
+                filial = partes[0]
+                cod_base_bem = partes[2]
+                codigo_item = partes[3]
+                # Junta a descrição que pode conter espaços
+                descr_sint = ' '.join(partes[5:-5])
+                data_aquisicao = partes[-5]
 
-        # Identifica linha de dados detalhados (começa com código numérico de filial)
-        elif linha_strip.split() and linha_strip.split()[0].isdigit() and len(linha_strip.split()) >= 5:
-            partes = linha_strip.split()
-            try:
-                # Verifica se é uma linha de dados válida (tem código de filial)
-                if len(partes) >= 10:
-                    filial_atual = partes[0]
-                    cod_base_bem_atual = partes[2]
-                    codigo_item_atual = partes[3]
-                    tipo_ativo_atual = partes[4]
-                    descr_sint_atual = partes[5] if len(partes) > 5 else ""
-                    tipo_depr_atual = partes[6] if len(partes) > 6 else ""
-                    data_aquisicao_atual = partes[7] if len(partes) > 7 else ""
+                dados_item_atual = {
+                    "Arquivo": nome_arquivo, "Filial": filial,
+                    "Conta contábil": conta_atual, "Descrição da conta": descricao_conta_atual,
+                    "Data de aquisição": data_aquisicao, "Código do item": cod_base_bem,
+                    "Código do sub item": codigo_item, "Descrição do item": descr_sint,
+                    "Valor original": 0.0, "Valor atualizado": 0.0, "Deprec. do mês": 0.0,
+                    "Deprec. do exercício": 0.0, "Deprec. Acumulada": 0.0, "Valor Residual": 0.0
+                }
 
-                    # Para descrições com múltiplas palavras, junte-as
-                    if len(partes) > 8:
-                        # Assume que os últimos 3 campos são data, quantidade e plaqueta
-                        descr_sint_atual = ' '.join(partes[5:-3])
-
-                    dados_item_atual = {
-                        "Arquivo": nome_arquivo,
-                        "Filial": filial_atual,
-                        "Conta contábil": conta_atual,
-                        "Descrição da conta": descricao_conta_atual,
-                        "Data de aquisição": data_aquisicao_atual,
-                        "Código do item": cod_base_bem_atual,
-                        "Código do sub item": codigo_item_atual,
-                        "Descrição do item": descr_sint_atual,
-                        "Tipo Ativo": tipo_ativo_atual,
-                        "Tipo Depr.": tipo_depr_atual,
-                        "Valor original": 0.0,
-                        "Valor atualizado": 0.0,
-                        "Deprec. do mês": 0.0,
-                        "Deprec. do exercício": 0.0,
-                        "Deprec. Acumulada": 0.0,
-                        "Valor Residual": 0.0
-                    }
-            except (IndexError, ValueError):
-                dados_item_atual = None
-
-        # Identifica linha de valores em R$ (vinculada ao item anterior)
-        elif linha_strip.startswith('R$') and dados_item_atual:
-            partes = linha_strip.split()
-            try:
+            # Identifica linha de valores em R$ (vinculada ao item anterior)
+            elif linha_strip.startswith('R$') and dados_item_atual:
+                partes = linha_strip.split()
                 if len(partes) >= 8:
                     dados_item_atual["Valor original"] = limpar_valor(
                         partes[2])
@@ -179,9 +148,13 @@ def processar_linhas_detalhadas(linhas_texto, nome_arquivo):
                         dados_item_atual["Deprec. Acumulada"]
 
                     dados_finais.append(dados_item_atual)
-                    dados_item_atual = None
-            except (IndexError, ValueError):
+                # Reseta o item atual para evitar adicionar o mesmo item duas vezes
                 dados_item_atual = None
+
+        except (IndexError, ValueError):
+            # Se ocorrer um erro ao processar uma linha, reseta e continua
+            dados_item_atual = None
+            continue
 
     return dados_finais
 
@@ -190,27 +163,28 @@ def processar_linhas_detalhadas(linhas_texto, nome_arquivo):
 
 @st.cache_data
 def processar_planilha(file_content, file_name):
-    """Processa arquivos Excel com dados detalhados"""
+    """Processa um arquivo (Excel ou Texto) e retorna um DataFrame."""
     try:
-        # Lê o arquivo Excel diretamente para um DataFrame do pandas
+        # Lê o arquivo Excel, tratando todas as células como texto para evitar erros de tipo
         df_raw = pd.read_excel(BytesIO(file_content),
                                header=None, engine='openpyxl')
         df_raw = df_raw.astype(str).fillna('')
 
-        # Transforma cada linha do DataFrame em uma única string
-        linhas_texto = df_raw.apply(lambda row: ' '.join(row), axis=1).tolist()
+        # Concatena todas as colunas de cada linha em uma única string
+        linhas_texto = df_raw.apply(
+            lambda row: ' '.join(row.dropna()), axis=1).tolist()
 
         dados_processados = processar_linhas_detalhadas(
             linhas_texto, file_name)
 
         if dados_processados:
             df_final = pd.DataFrame(dados_processados)
-            # Ordena as colunas conforme solicitado
+            # Garante a ordem correta das colunas
             colunas_ordenadas = [
-                'Conta contábil', 'Descrição da conta', 'Data de aquisição',
+                'Arquivo', 'Filial', 'Conta contábil', 'Descrição da conta', 'Data de aquisição',
                 'Código do item', 'Código do sub item', 'Descrição do item',
                 'Valor original', 'Valor atualizado', 'Deprec. do mês',
-                'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual', 'Arquivo'
+                'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual'
             ]
             df_final = df_final.reindex(
                 columns=colunas_ordenadas, fill_value="")
@@ -239,7 +213,7 @@ with st.sidebar:
     st.markdown(f'<a href="{link_teams}" target="_blank" style="display: inline-block; padding: 10px 20px; background-color: #4B53BC; color: white; text-align: center; text-decoration: none; border-radius: 5px; font-weight: bold;">Abrir Chat no Teams</a>', unsafe_allow_html=True)
 
 uploaded_files = st.file_uploader("Escolha os arquivos de relatório de ativos", type=[
-                                  'xlsx', 'xls', 'txt'], accept_multiple_files=True)
+                                  'xlsx', 'xls'], accept_multiple_files=True)
 
 if uploaded_files:
     all_data, errors = [], []
@@ -260,76 +234,89 @@ if uploaded_files:
 
     progress_bar.empty()
 
+    # --- CORREÇÃO PRINCIPAL: SÓ PROSSEGUIR SE HOUVER DADOS ---
     if all_data:
         dados_combinados = pd.concat(all_data, ignore_index=True)
-        st.success(
-            f"Processamento finalizado! {len(all_data)} arquivo(s) carregados, totalizando {len(dados_combinados):,} registros.")
 
-        st.markdown("### Filtros")
-        col1, col2, col3 = st.columns(3)
-        arquivos_options = sorted(dados_combinados['Arquivo'].unique())
-        filiais_options = sorted(dados_combinados['Filial'].unique())
-        categorias_options = sorted(
-            dados_combinados['Descrição da conta'].unique())
+        if not dados_combinados.empty:
+            st.success(
+                f"Processamento finalizado! {len(all_data)} arquivo(s) carregados, totalizando {len(dados_combinados):,} registros.")
 
-        with col1:
-            selecao_arquivo = st.multiselect(
-                "Filtrar por Arquivo:", arquivos_options, default=arquivos_options)
-        with col2:
-            selecao_filial = st.multiselect(
-                "Filtrar por Filial:", filiais_options, default=filiais_options)
-        with col3:
-            selecao_categoria = st.multiselect(
-                "Filtrar por Descrição da Conta:", categorias_options, default=categorias_options)
+            st.markdown("### Filtros")
+            col1, col2, col3 = st.columns(3)
 
-        dados_filtrados = dados_combinados[
-            (dados_combinados['Arquivo'].isin(selecao_arquivo)) &
-            (dados_combinados['Filial'].isin(selecao_filial)) &
-            (dados_combinados['Descrição da conta'].isin(selecao_categoria))
-        ]
+            # Criação segura das opções de filtro
+            arquivos_options = sorted(dados_combinados['Arquivo'].unique(
+            )) if 'Arquivo' in dados_combinados.columns else []
+            filiais_options = sorted(dados_combinados['Filial'].unique(
+            )) if 'Filial' in dados_combinados.columns else []
+            categorias_options = sorted(dados_combinados['Descrição da conta'].unique(
+            )) if 'Descrição da conta' in dados_combinados.columns else []
 
-        st.markdown("### Resumo dos Dados Filtrados")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Registros Filtrados", f"{len(dados_filtrados):,}")
-        col2.metric("Valor Total Atualizado", formatar_valor(
-            dados_filtrados["Valor atualizado"].sum()))
-        col3.metric("Depreciação Acumulada", formatar_valor(
-            dados_filtrados["Deprec. Acumulada"].sum()))
-        col4.metric("Valor Residual Total", formatar_valor(
-            dados_filtrados["Valor Residual"].sum()))
+            with col1:
+                selecao_arquivo = st.multiselect(
+                    "Filtrar por Arquivo:", arquivos_options, default=arquivos_options)
+            with col2:
+                selecao_filial = st.multiselect(
+                    "Filtrar por Filial:", filiais_options, default=filiais_options)
+            with col3:
+                selecao_categoria = st.multiselect(
+                    "Filtrar por Descrição da Conta:", categorias_options, default=categorias_options)
 
-        tab1, tab2, tab3 = st.tabs(
-            ["Dados Detalhados", "Análise por Filial", "Análise por Descrição da Conta"])
+            # Aplica os filtros ao DataFrame
+            dados_filtrados = dados_combinados[
+                (dados_combinados['Arquivo'].isin(selecao_arquivo)) &
+                (dados_combinados['Filial'].isin(selecao_filial)) &
+                (dados_combinados['Descrição da conta'].isin(
+                    selecao_categoria))
+            ]
 
-        with tab1:
-            df_display = dados_filtrados.copy()
-            colunas_formatar = ['Valor original', 'Valor atualizado', 'Deprec. do mês',
-                                'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual']
-            for col in colunas_formatar:
-                if col in df_display.columns:
-                    df_display[col] = df_display[col].apply(formatar_valor)
-            st.dataframe(df_display, use_container_width=True, height=500)
+            st.markdown("### Resumo dos Dados Filtrados")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Registros Filtrados", f"{len(dados_filtrados):,}")
+            col2.metric("Valor Total Atualizado", formatar_valor(
+                dados_filtrados["Valor atualizado"].sum()))
+            col3.metric("Depreciação Acumulada", formatar_valor(
+                dados_filtrados["Deprec. Acumulada"].sum()))
+            col4.metric("Valor Residual Total", formatar_valor(
+                dados_filtrados["Valor Residual"].sum()))
 
-        with tab2:
-            analise_filial = dados_filtrados.groupby('Filial').agg(
-                Contagem=('Arquivo', 'count'),
-                Valor_Total=('Valor atualizado', 'sum')
-            ).reset_index()
-            st.dataframe(analise_filial, use_container_width=True,
-                         column_config={"Valor_Total": st.column_config.NumberColumn(format="R$ %.2f")})
+            tab1, tab2, tab3 = st.tabs(
+                ["Dados Detalhados", "Análise por Filial", "Análise por Descrição da Conta"])
 
-        with tab3:
-            analise_categoria = dados_filtrados.groupby('Descrição da conta').agg(
-                Contagem=('Arquivo', 'count'),
-                Valor_Total=('Valor atualizado', 'sum')
-            ).reset_index()
-            st.dataframe(analise_categoria, use_container_width=True,
-                         column_config={"Valor_Total": st.column_config.NumberColumn(format="R$ %.2f")})
+            with tab1:
+                df_display = dados_filtrados.copy()
+                colunas_formatar = ['Valor original', 'Valor atualizado', 'Deprec. do mês',
+                                    'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual']
+                for col in colunas_formatar:
+                    if col in df_display.columns:
+                        df_display[col] = df_display[col].apply(formatar_valor)
+                st.dataframe(df_display, use_container_width=True, height=500)
 
-        # ... (restante do código para gráficos e exportação)
+            with tab2:
+                analise_filial = dados_filtrados.groupby('Filial').agg(
+                    Contagem_de_Itens=('Arquivo', 'count'),
+                    Valor_Total_Atualizado=('Valor atualizado', 'sum')
+                ).reset_index().sort_values(by='Valor_Total_Atualizado', ascending=False)
+                st.dataframe(analise_filial, use_container_width=True,
+                             column_config={"Valor_Total_Atualizado": st.column_config.NumberColumn(format="R$ %.2f")})
+
+            with tab3:
+                analise_categoria = dados_filtrados.groupby('Descrição da conta').agg(
+                    Contagem_de_Itens=('Arquivo', 'count'),
+                    Valor_Total_Atualizado=('Valor atualizado', 'sum')
+                ).reset_index().sort_values(by='Valor_Total_Atualizado', ascending=False)
+                st.dataframe(analise_categoria, use_container_width=True,
+                             column_config={"Valor_Total_Atualizado": st.column_config.NumberColumn(format="R$ %.2f")})
+
+            # Adicione aqui o restante do seu código para gráficos e exportação...
+
+        else:
+            st.warning(
+                "Os arquivos foram processados, mas não foi possível extrair nenhum dado de ativo contábil válido. Verifique o formato dos arquivos.")
 
     if errors:
-        st.warning("Avisos durante o processamento:")
+        st.warning("Avisos e erros encontrados durante o processamento:")
         for error_msg in errors:
             st.error(error_msg)
 
