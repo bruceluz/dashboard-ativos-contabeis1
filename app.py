@@ -1,4 +1,3 @@
-
 import pandas as pd
 import streamlit as st
 from io import BytesIO
@@ -30,7 +29,7 @@ if 'eixo_x' not in st.session_state:
 if 'eixos_y' not in st.session_state:
     st.session_state.eixos_y = None
 
-# --- FUNÇÕES DE LÓGICA (sem alteração) ---
+# --- FUNÇÕES DE LÓGICA ---
 
 
 def padronizar_nome_filial(nome_filial):
@@ -85,11 +84,13 @@ def processar_planilha(file):
     try:
         xl = pd.ExcelFile(file)
         dados_processados = []
+
         for sheet_name in xl.sheet_names:
             sheet_df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
             filial_atual = "Não Identificado"
             conta_contabil_atual = "Não Identificado"
             descricao_conta_atual = "Não Identificado"
+            last_data_row_info = {}
 
             for idx, row in sheet_df.iterrows():
                 # Identificar Filial
@@ -97,188 +98,70 @@ def processar_planilha(file):
                     nome_extraido = str(row.iloc[0]).split(
                         'Filial :')[-1].split(' - ')[-1].strip()
                     filial_atual = padronizar_nome_filial(nome_extraido)
-                
+
                 # Identificar Conta Contábil e Descrição da Conta
                 elif pd.notna(row.iloc[0]) and str(row.iloc[0]).startswith('1.2.3.'):
                     conta_contabil_atual = str(row.iloc[0]).strip()
-                    descricao_conta_atual = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+                    descricao_conta_atual = str(
+                        row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
 
                 # Identificar linhas de dados (onde a Filial e o Código do Item estão presentes)
                 elif pd.notna(row.iloc[0]) and str(row.iloc[0]).strip().isdigit() and len(str(row.iloc[0]).strip()) == 6 and \
-                     pd.notna(row.iloc[2]) and str(row.iloc[2]).strip().isdigit():
-                    
-                    # Extrair dados das colunas solicitadas
-                    filial_item = str(row.iloc[0]).strip() # Coluna A
-                    codigo_item = str(row.iloc[2]).strip() # Coluna C
-                    data_aquisicao = pd.to_datetime(row.iloc[7], errors='coerce') # Coluna H
-                    
-                    # Novos campos solicitados
-                    codigo_sub_item = str(row.iloc[9]).strip() if pd.notna(row.iloc[9]) else "" # Coluna J
-                    descricao_item = str(row.iloc[3]).strip() if pd.notna(row.iloc[3]) else "" # Coluna D
+                        pd.notna(row.iloc[2]) and str(row.iloc[2]).strip().isdigit():
 
-                    # Valores numéricos
-                    # A planilha de exemplo mostra que os valores estão em linhas separadas, logo abaixo da linha de dados principais.
-                    # Precisamos ajustar a lógica para capturar esses valores corretamente.
-                    # Por enquanto, vamos usar valores padrão ou tentar inferir se possível.
-                    # A estrutura atual do código já tenta pegar valores de uma linha 'R$'.
-                    # Vou manter a lógica existente para 'R$' e tentar mapear para as novas colunas.
-                    
-                    # A lógica original pegava valores da linha 'R$' e os mapeava para 'Valor Original', 'Valor Atualizado', etc.
-                    # A solicitação do usuário é para ter 'Valor original', 'Valor atualizado', 'Deprec. do mês', 'Deprec. do exercício', 'Deprec. Acumulada'
-                    # A linha 'R$' na planilha de exemplo tem os valores em row.iloc[1] a row.iloc[7]
-                    # Valor Original: row.iloc[1] da linha 'R$'
-                    # Valor Atualizado: row.iloc[2] da linha 'R$'
-                    # Deprec. do mês: row.iloc[3] da linha 'R$'
-                    # Deprec. do exercício: row.iloc[4] da linha 'R$'
-                    # Deprec. Acumulada: row.iloc[5] da linha 'R$'
+                    # Extrair dados das colunas solicitadas
+                    filial_item = str(row.iloc[0]).strip()  # Coluna A
+                    codigo_item = str(row.iloc[2]).strip()  # Coluna C
+                    data_aquisicao = pd.to_datetime(
+                        row.iloc[7], errors='coerce')  # Coluna H
+
+                    # Novos campos solicitados
+                    codigo_sub_item = str(row.iloc[9]).strip() if pd.notna(
+                        row.iloc[9]) else ""  # Coluna J
+                    descricao_item = str(row.iloc[3]).strip() if pd.notna(
+                        row.iloc[3]) else ""  # Coluna D
 
                     # Filtrar por data de aquisição
                     if pd.notna(data_aquisicao) and data_aquisicao >= pd.to_datetime('1990-01-01'):
-                        # A lógica para extrair os valores da linha 'R$' já existe e está logo abaixo.
-                        # Vou adicionar um placeholder para os valores e preenchê-los na próxima iteração da linha 'R$'.
-                        # Isso significa que a linha de dados e a linha de valores 'R$' precisam ser processadas em conjunto.
-                        # Para simplificar, vou assumir que a linha 'R$' sempre segue a linha de dados.
-                        # Isso pode ser um problema se a estrutura da planilha variar.
-                        
-                        # A abordagem atual do código é processar a linha 'R$' separadamente.
-                        # Para as novas colunas, precisamos associar os valores da linha 'R$' à linha de dados.
-                        # A melhor forma é capturar os dados da linha de dados e esperar pela linha 'R$'.
-                        # Ou, se a linha 'R$' estiver sempre na próxima linha, podemos tentar ler a próxima linha.
+                        last_data_row_info = {
+                            'Arquivo': file.name,
+                            'Filial': filial_atual,
+                            'Conta contábil': conta_contabil_atual,
+                            'Descrição da conta': descricao_conta_atual,
+                            'Data de aquisição': data_aquisicao,
+                            'Código do item': codigo_item,
+                            'Código do sub item': codigo_sub_item,
+                            'Descrição do item': descricao_item,
+                            'Valor original': 0.0,
+                            'Valor atualizado': 0.0,
+                            'Deprec. do mês': 0.0,
+                            'Deprec. do exercício': 0.0,
+                            'Deprec. Acumulada': 0.0,
+                            'Valor Residual': 0.0
+                        }
 
-                        # Para o propósito desta modificação, vou ajustar a lógica para extrair os valores da linha 'R$' e associá-los.
-                        # A lógica atual do `processar_planilha` já faz isso, mas os nomes das colunas precisam ser ajustados.
-                        # O problema é que a linha 'R$' é processada como um item separado no `dados_processados`.
-                        # Precisamos garantir que os valores da linha 'R$' sejam associados à linha de dados correta.
+                # Identificar linha de valores 'R$'
+                elif pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() == 'R$':
+                    if last_data_row_info:  # Se houver uma linha de dados anterior para associar
+                        valores = [converter_valor(v) for v in row.iloc[1:8]]
 
-                        # Vou modificar a estrutura para que a linha 'R$' preencha os valores da última linha de dados processada.
-                        # Isso exigirá um ajuste na forma como `dados_processados` é construído.
-                        
-                        # Temporariamente, vou extrair os valores da linha 'R$' na mesma iteração, assumindo que eles estão na mesma linha de dados.
-                        # Isso é uma simplificação e pode precisar de ajuste se a estrutura for mais complexa.
-                        
-                        # Revertendo para a lógica original de como os valores são extraídos, mas ajustando os nomes das colunas.
-                        # A lógica atual do `processar_planilha` já extrai os valores da linha 'R$' e os mapeia.
-                        # O que precisamos é garantir que as colunas solicitadas sejam preenchidas corretamente.
-                        
-                        # A solicitação é para ter as colunas na ordem:
-                        # Filial, Conta contábil, Descrição da conta, Data de aquisição, Código do item, Código do sub item, Descrição do item, Valor original, Valor atualizado, Deprec. do mês, Deprec. do exercício, Deprec. Acumulada
+                        # Preencher os valores financeiros
+                        last_data_row_info['Valor original'] = valores[1] if len(
+                            valores) > 1 else 0
+                        last_data_row_info['Valor atualizado'] = valores[2] if len(
+                            valores) > 2 else 0
+                        last_data_row_info['Deprec. do mês'] = valores[3] if len(
+                            valores) > 3 else 0
+                        last_data_row_info['Deprec. do exercício'] = valores[4] if len(
+                            valores) > 4 else 0
+                        last_data_row_info['Deprec. Acumulada'] = valores[5] if len(
+                            valores) > 5 else 0
+                        last_data_row_info['Valor Residual'] = last_data_row_info['Valor atualizado'] - \
+                            last_data_row_info['Deprec. Acumulada']
 
-                        # A lógica atual já extrai 'Filial', 'Categoria' (que é a Descrição da Conta), 'Valor Original', 'Valor Atualizado', 'Deprec. no mês', 'Deprec. no Exercício', 'Deprec. Acumulada'.
-                        # Precisamos adicionar 'Conta contábil', 'Data de aquisição', 'Código do item', 'Código do sub item', 'Descrição do item'.
-                        
-                        # A 'Categoria' atual é a 'Descrição da conta'.
-                        # 'Valor Original' e 'Valor Atualizado' já são extraídos.
-                        # 'Deprec. no mês', 'Deprec. no Exercício', 'Deprec. Acumulada' também.
-
-                        # O desafio é que a 'Conta contábil' e 'Descrição da conta' são extraídas de uma linha diferente ('1.2.3.').
-                        # E os valores ('R$') são extraídos de outra linha.
-                        # A 'Filial' também é extraída de uma linha diferente.
-
-                        # A melhor abordagem é coletar todos os dados relevantes de cada tipo de linha e, em seguida, combiná-los.
-                        # Vou reestruturar a função `processar_planilha` para ser mais robusta.
-
-                        # Nova abordagem: Coletar informações de cabeçalho (Filial, Conta Contábil, Descrição da Conta) e depois processar as linhas de dados.
-                        # A linha 'R$' contém os valores que precisam ser associados à última linha de dados encontrada.
-
-                        # Vamos manter a estrutura de `dados_processados` como uma lista de dicionários.
-                        # Cada dicionário representará uma linha final de dados.
-                        
-                        # A lógica atual já tenta fazer isso, mas a forma como os dados são agrupados é o problema.
-                        # A 'categoria_atual' no código original é a 'Descrição da conta'.
-                        # A 'filial_atual' é a 'Filial'.
-
-                        # Vamos ajustar o dicionário `dados_processados.append` para incluir as novas colunas e reordenar.
-                        # E garantir que os valores da linha 'R$' sejam corretamente associados.
-
-                        # A lógica atual para a linha 'R$' é:
-                        # elif pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() == 'R$':
-                        #     valores = [converter_valor(v) for v in row.iloc[1:8]]
-                        #     valor_atualizado = valores[2] if len(valores) > 2 else 0
-                        #     deprec_acumulada = valores[5] if len(valores) > 5 else 0
-                        #     if valor_atualizado > 0:
-                        #         dados_processados.append({
-                        #             'Arquivo': file.name, 'Filial': filial_atual, 'Categoria': categoria_atual,
-                        #             'Valor Original': valores[1] if len(valores) > 1 else 0,
-                        #             'Valor Atualizado': valor_atualizado,
-                        #             'Deprec. no mês': valores[3] if len(valores) > 3 else 0,
-                        #             'Deprec. no Exercício': valores[4] if len(valores) > 4 else 0,
-                        #             'Deprec. Acumulada': deprec_acumulada,
-                        #             'Valor Residual': valor_atualizado - deprec_acumulada
-                        #         })
-
-                        # Isso significa que a linha 'R$' cria uma nova entrada em `dados_processados`.
-                        # O que queremos é que a linha 'R$' *atualize* a última entrada de dados.
-
-                        # Reestruturando `processar_planilha` para lidar com isso.
-                        # Vamos manter um dicionário temporário para a linha de dados atual.
-                        
-                        # Resetando a lógica de processamento da planilha para ser mais sequencial e robusta.
-                        # A ideia é que cada linha de dados (com Filial e Código do Item) seja uma entrada.
-                        # E a linha 'R$' subsequente preencha os valores financeiros para essa entrada.
-
-                        # Novo `processar_planilha`:
-                        dados_processados = []
-                        last_data_row_info = {}
-
-                        for sheet_name in xl.sheet_names:
-                            sheet_df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
-                            filial_atual = "Não Identificado"
-                            conta_contabil_atual = "Não Identificado"
-                            descricao_conta_atual = "Não Identificado"
-
-                            for idx, row in sheet_df.iterrows():
-                                # Identificar Filial
-                                if pd.notna(row.iloc[0]) and 'Filial :' in str(row.iloc[0]):
-                                    nome_extraido = str(row.iloc[0]).split(
-                                        'Filial :')[-1].split(' - ')[-1].strip()
-                                    filial_atual = padronizar_nome_filial(nome_extraido)
-                                
-                                # Identificar Conta Contábil e Descrição da Conta
-                                elif pd.notna(row.iloc[0]) and str(row.iloc[0]).startswith('1.2.3.'):
-                                    conta_contabil_atual = str(row.iloc[0]).strip()
-                                    descricao_conta_atual = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
-
-                                # Identificar linhas de dados (onde a Filial e o Código do Item estão presentes)
-                                elif pd.notna(row.iloc[0]) and str(row.iloc[0]).strip().isdigit() and len(str(row.iloc[0]).strip()) == 6 and \
-                                     pd.notna(row.iloc[2]) and str(row.iloc[2]).strip().isdigit():
-                                    
-                                    data_aquisicao = pd.to_datetime(row.iloc[7], errors='coerce') # Coluna H
-                                    
-                                    if pd.notna(data_aquisicao) and data_aquisicao >= pd.to_datetime('1990-01-01'):
-                                        last_data_row_info = {
-                                            'Arquivo': file.name,
-                                            'Filial': filial_atual, # Coluna A
-                                            'Conta contábil': conta_contabil_atual, # Coluna A
-                                            'Descrição da conta': descricao_conta_atual, # Coluna B
-                                            'Data de aquisição': data_aquisicao, # Coluna H
-                                            'Código do item': str(row.iloc[2]).strip(), # Coluna C
-                                            'Código do sub item': str(row.iloc[9]).strip() if pd.notna(row.iloc[9]) else "", # Coluna J
-                                            'Descrição do item': str(row.iloc[3]).strip() if pd.notna(row.iloc[3]) else "", # Coluna D
-                                            'Valor original': 0.0,
-                                            'Valor atualizado': 0.0,
-                                            'Deprec. do mês': 0.0,
-                                            'Deprec. do exercício': 0.0,
-                                            'Deprec. Acumulada': 0.0,
-                                            'Valor Residual': 0.0 # Será calculado depois
-                                        }
-                                        # Adiciona a linha de dados, os valores financeiros serão preenchidos pela próxima linha 'R$'
-                                        dados_processados.append(last_data_row_info)
-                                
-                                # Identificar linha de valores 'R$'
-                                elif pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() == 'R$':
-                                    if last_data_row_info: # Se houver uma linha de dados anterior para associar
-                                        valores = [converter_valor(v) for v in row.iloc[1:8]]
-                                        
-                                        # Atualiza a última entrada em dados_processados
-                                        # Acessa o último dicionário adicionado e o modifica
-                                        if dados_processados:
-                                            dados_processados[-1]['Valor original'] = valores[1] if len(valores) > 1 else 0
-                                            dados_processados[-1]['Valor atualizado'] = valores[2] if len(valores) > 2 else 0
-                                            dados_processados[-1]['Deprec. do mês'] = valores[3] if len(valores) > 3 else 0
-                                            dados_processados[-1]['Deprec. do exercício'] = valores[4] if len(valores) > 4 else 0
-                                            dados_processados[-1]['Deprec. Acumulada'] = valores[5] if len(valores) > 5 else 0
-                                            dados_processados[-1]['Valor Residual'] = dados_processados[-1]['Valor atualizado'] - dados_processados[-1]['Deprec. Acumulada']
-                                        last_data_row_info = {} # Reset para a próxima linha de dados
+                        # Adicionar à lista de dados processados
+                        dados_processados.append(last_data_row_info)
+                        last_data_row_info = {}  # Reset para a próxima linha de dados
 
         if dados_processados:
             df_final = pd.DataFrame(dados_processados)
@@ -296,7 +179,7 @@ def processar_planilha(file):
                 'Deprec. do mês',
                 'Deprec. do exercício',
                 'Deprec. Acumulada',
-                'Valor Residual' # Manter o valor residual para cálculos internos
+                'Valor Residual'
             ]
             df_final = df_final[colunas_ordenadas]
             return corrigir_filiais_nao_identificadas(df_final), None
@@ -323,7 +206,6 @@ def criar_pdf_completo(buffer, df_filtrado, dados_grafico, tipo_grafico, eixo_x,
             fig, ax = plt.subplots(figsize=(11, 5))
 
             if tipo_grafico in ['Barras', 'Linhas']:
-                # Para Matplotlib, é melhor ter o eixo X como índice para plotagem de múltiplas colunas
                 df_plot = dados_grafico.set_index(eixo_x)
                 df_plot.plot(
                     kind='bar' if tipo_grafico == 'Barras' else 'line',
@@ -432,8 +314,8 @@ if uploaded_files:
         col1, col2, col3 = st.columns(3)
         arquivos_options = sorted(dados_combinados['Arquivo'].unique())
         filiais_options = sorted(dados_combinados['Filial'].unique())
-        # A categoria agora é 'Descrição da conta'
-        categorias_options = sorted(dados_combinados['Descrição da conta'].unique())
+        categorias_options = sorted(
+            dados_combinados['Descrição da conta'].unique())
         with col1:
             selecao_arquivo = st.multiselect(
                 "Arquivo:", ["Selecionar Todos"] + arquivos_options, default="Selecionar Todos")
@@ -441,8 +323,8 @@ if uploaded_files:
             selecao_filial = st.multiselect(
                 "Filial:", ["Selecionar Todos"] + filiais_options, default="Selecionar Todos")
         with col3:
-            selecao_categoria = st.multiselect(
-                "Descrição da Conta:", ["Selecionar Todos"] + categorias_options, default="Selecionar Todos")
+            selecao_categoria = st.multiselect("Descrição da Conta:", [
+                                               "Selecionar Todos"] + categorias_options, default="Selecionar Todos")
 
         filtro_arquivo = arquivos_options if "Selecionar Todos" in selecao_arquivo else selecao_arquivo
         filtro_filial = filiais_options if "Selecionar Todos" in selecao_filial else selecao_filial
@@ -462,7 +344,6 @@ if uploaded_files:
         col4.metric("Valor Residual Total", formatar_valor(
             dados_filtrados["Valor Residual"].sum()))
 
-        # ### CÓDIGO DAS ABAS RESTAURADO ###
         tab1, tab2, tab3 = st.tabs(
             ["Dados Detalhados", "Análise por Filial", "Análise por Descrição da Conta"])
         with tab1:
@@ -482,7 +363,6 @@ if uploaded_files:
             analise_categoria['Valor_Total'] = analise_categoria['Valor_Total'].apply(
                 formatar_valor)
             st.dataframe(analise_categoria, use_container_width=True)
-        # ### FIM DO BLOCO RESTAURADO ###
 
         st.markdown("---")
         st.header("Gráfico Interativo")
@@ -561,7 +441,8 @@ if uploaded_files:
 
         with col_download2:
             output_pdf = BytesIO()
-            criar_pdf_completo(output_pdf, dados_filtrados, st.session_state.dados_grafico, st.session_state.tipo_grafico, st.session_state.eixo_x, st.session_state.eixos_y)
+            criar_pdf_completo(output_pdf, dados_filtrados, st.session_state.dados_grafico,
+                               st.session_state.tipo_grafico, st.session_state.eixo_x, st.session_state.eixos_y)
             st.download_button(
                 label="Baixar Relatório (PDF)",
                 data=output_pdf.getvalue(),
@@ -577,5 +458,3 @@ if uploaded_files:
 
 else:
     st.info("Por favor, carregue seus arquivos Excel para começar.")
-
-
