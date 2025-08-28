@@ -7,7 +7,7 @@ import urllib.parse
 from fpdf import FPDF
 import traceback
 import os
-import re  # Importa o módulo de expressões regulares
+import re
 
 # Ignorar avisos para uma interface mais limpa
 warnings.filterwarnings('ignore')
@@ -74,13 +74,11 @@ def formatar_valor(valor):
 def limpar_valor(valor_str):
     try:
         s = str(valor_str).strip()
-        if s == '-' or s == '':
+        if s == '-' or s == '' or s.lower() == 'nan':
             return 0.0
         return float(s.replace('.', '').replace(',', '.'))
     except (ValueError, AttributeError, TypeError):
         return 0.0
-
-# --- LÓGICA DE PARSING APRIMORADA ---
 
 
 def processar_linhas_do_arquivo(linhas_texto, nome_arquivo):
@@ -99,7 +97,6 @@ def processar_linhas_do_arquivo(linhas_texto, nome_arquivo):
         if not linha_strip or any(termo in linha for termo in TERMOS_A_IGNORAR):
             continue
 
-        # --- MUDANÇA CRÍTICA: Usa expressão regular para dividir por tabs ou múltiplos espaços ---
         colunas = [p.strip() for p in re.split(
             r'\s{2,}|[\t]', linha_strip) if p.strip()]
         if not colunas:
@@ -114,8 +111,6 @@ def processar_linhas_do_arquivo(linhas_texto, nome_arquivo):
         elif colunas[0] == "R$":
             if dados_item_atual:
                 try:
-                    # A lógica de índice aqui depende da separação correta.
-                    # Ex: ['R$', '-', '1.119.850,39', ...]
                     dados_item_atual["Valor original"] = limpar_valor(
                         colunas[2])
                     dados_item_atual["Valor atualizado"] = limpar_valor(
@@ -159,19 +154,25 @@ def processar_linhas_do_arquivo(linhas_texto, nome_arquivo):
 
     return dados_finais
 
-# --- FUNÇÃO DE PROCESSAMENTO PRINCIPAL ---
+# --- FUNÇÃO DE PROCESSAMENTO PRINCIPAL (SOLUÇÃO HÍBRIDA) ---
 
 
 @st.cache_data
 def processar_planilha(file_content, file_name):
     try:
-        # Tenta decodificar como UTF-8, com fallback para latin-1
-        try:
-            text_content = file_content.decode('utf-8')
-        except UnicodeDecodeError:
-            text_content = file_content.decode('latin-1', errors='replace')
+        # Lê o arquivo Excel diretamente para um DataFrame do pandas
+        # `header=None` é crucial para pegar todas as linhas, inclusive os cabeçalhos do relatório
+        df_raw = pd.read_excel(BytesIO(file_content),
+                               header=None, engine='openpyxl')
 
-        linhas_texto = text_content.splitlines()
+        # Converte todas as células para string e preenche células vazias (NaN) com ""
+        df_raw = df_raw.astype(str).fillna('')
+
+        # Transforma cada linha do DataFrame em uma única string, com colunas separadas por TAB
+        # Isso cria um formato de texto consistente que nossa função de parsing pode processar
+        linhas_texto = df_raw.apply(
+            lambda row: '\t'.join(row), axis=1).tolist()
+
         dados_processados = processar_linhas_do_arquivo(
             linhas_texto, file_name)
 
