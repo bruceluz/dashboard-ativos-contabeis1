@@ -76,18 +76,25 @@ def processar_planilha(file):
         dados_processados = []
 
         for sheet_name in xl.sheet_names:
+            # Lê a aba sem cabeçalho, o pandas vai inferir a largura máxima
             sheet_df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
 
             conta_contabil_atual = "Não Identificado"
             descricao_conta_atual = "Não Identificado"
             item_temporario = None
 
+            # Itera sobre cada linha lida da planilha
             for _, row in sheet_df.iterrows():
+                # Pula linhas completamente vazias
                 if row.isnull().all():
                     continue
 
+                # Define o número de colunas na linha atual
+                num_colunas = len(row)
+
                 # 1. Identifica a linha da Conta Contábil
-                if pd.notna(row.iloc[0]) and str(row.iloc[0]).startswith('1.2.3.'):
+                # Verifica se a linha tem pelo menos 2 colunas antes de acessar
+                if num_colunas > 1 and pd.notna(row.iloc[0]) and str(row.iloc[0]).startswith('1.2.3.'):
                     conta_contabil_atual = str(row.iloc[0]).strip()
                     descricao_conta_atual = str(
                         row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
@@ -95,23 +102,29 @@ def processar_planilha(file):
                     continue
 
                 # 2. Identifica a linha principal do item (com base em código e data)
-                data_aquisicao = pd.to_datetime(row.iloc[7], errors='coerce')
-                # A condição verifica se a coluna A é um número, e a coluna H é uma data válida
-                if pd.notna(row.iloc[0]) and isinstance(row.iloc[0], (int, float)) and pd.notna(data_aquisicao):
-                    item_temporario = {
-                        'Arquivo': file.name,
-                        'Filial': str(int(row.iloc[0])).strip(),
-                        'Conta contábil': conta_contabil_atual,
-                        'Descrição da conta': descricao_conta_atual,
-                        'Data de aquisição': data_aquisicao,
-                        'Código do item': str(row.iloc[2]).strip(),
-                        'Código do sub item': str(row.iloc[3]).strip(),
-                        'Descrição do item': str(row.iloc[5]).strip()
-                    }
-                    continue  # Procura a linha de valores na próxima iteração
+                # >>> AQUI ESTÁ A CORREÇÃO PRINCIPAL <<<
+                # Garante que a linha tenha pelo menos 8 colunas (índice 7) antes de tentar o acesso
+                if num_colunas > 7:
+                    data_aquisicao = pd.to_datetime(
+                        row.iloc[7], errors='coerce')
+                    # A condição agora é mais segura
+                    if pd.notna(row.iloc[0]) and isinstance(row.iloc[0], (int, float)) and pd.notna(data_aquisicao):
+                        item_temporario = {
+                            'Arquivo': file.name,
+                            'Filial': str(int(row.iloc[0])).strip(),
+                            'Conta contábil': conta_contabil_atual,
+                            'Descrição da conta': descricao_conta_atual,
+                            'Data de aquisição': data_aquisicao,
+                            # Acessos seguros, pois já verificamos num_colunas > 7
+                            'Código do item': str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) else "",
+                            'Código do sub item': str(row.iloc[3]).strip() if pd.notna(row.iloc[3]) else "",
+                            'Descrição do item': str(row.iloc[5]).strip() if pd.notna(row.iloc[5]) else ""
+                        }
+                        continue  # Procura a linha de valores na próxima iteração
 
-                # 3. Identifica a linha de valores (começa com "R$") e associa ao item temporário
-                if item_temporario and pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() == 'R$':
+                # 3. Identifica a linha de valores e associa ao item temporário
+                # Garante que a linha tenha pelo menos 7 colunas (índice 6)
+                if item_temporario and num_colunas > 6 and pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() == 'R$':
                     item_temporario['Valor original'] = converter_valor(
                         row.iloc[2])
                     item_temporario['Valor atualizado'] = converter_valor(
@@ -143,6 +156,7 @@ def processar_planilha(file):
         return pd.DataFrame(), f"Nenhum dado no formato esperado foi encontrado em '{file.name}'."
     except Exception as e:
         st.error(f"Erro crítico ao processar o arquivo '{file.name}': {e}")
+        # Isso vai imprimir o traceback completo na interface do Streamlit
         st.code(traceback.format_exc())
         return pd.DataFrame(), f"Erro crítico ao processar '{file.name}'."
 
