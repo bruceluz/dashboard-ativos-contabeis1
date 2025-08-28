@@ -1,5 +1,1 @@
-# Habilita o repositório "contrib" para encontrar o pacote de fontes
---repository=http://deb.debian.org/debian,bullseye,contrib
-# Pré-aceita a licença das fontes da Microsoft para permitir a instalação automática
-debconf-utils
-ttf-mscorefonts-installer
+fonts-liberation2
