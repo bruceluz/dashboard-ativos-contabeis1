@@ -79,8 +79,7 @@ def corrigir_filiais_nao_identificadas(df_arquivo):
             'Não Identificado', filial_predominante)
     return df_arquivo
 
-### ALTERAÇÃO ###
-# Função de processamento atualizada para extrair as novas colunas
+# Função de processamento com a correção aplicada
 
 
 def processar_planilha(file):
@@ -88,8 +87,7 @@ def processar_planilha(file):
         xl = pd.ExcelFile(file)
         dados_processados = []
 
-        # Definição das novas colunas a serem extraídas
-        colunas_novas = [
+        colunas_desejadas = [
             'Filial', 'C Custo', 'Cod Base Bem', 'Codigo Item', 'Tipo Ativo',
             'Descr. Sint.', 'Tipo Depr.', 'Dt.Aquisicao', 'Data Baixa',
             'Quantidade', 'Num.Plaqueta', 'Item Despesa', 'ClVl Despesa',
@@ -99,28 +97,32 @@ def processar_planilha(file):
         ]
 
         for sheet_name in xl.sheet_names:
-            sheet_df = pd.read_excel(sheet_name, header=None, dtype=str)
+            # ### CORREÇÃO APLICADA AQUI ###
+            # Lê a aba 'sheet_name' do objeto de arquivo 'xl'
+            sheet_df = pd.read_excel(
+                xl, sheet_name=sheet_name, header=None, dtype=str)
+
             filial_atual = "Não Identificado"
             dados_ativo_atual = {}
 
             for _, row in sheet_df.iterrows():
-                # Ignora linhas vazias
                 if row.isnull().all():
                     continue
 
                 row_str = ' '.join(str(x) for x in row if pd.notna(x))
 
-                # Extrai a Filial
                 if 'Filial :' in row_str:
                     nome_extraido = row_str.split(
                         'Filial :')[-1].split(' - ')[-1].strip()
                     filial_atual = padronizar_nome_filial(nome_extraido)
                     continue
 
-                # Identifica o início de um novo ativo
                 if str(row.iloc[0]).startswith('1.2.3.'):
-                    # Reseta para o novo ativo
-                    dados_ativo_atual = {col: None for col in colunas_novas}
+                    if dados_ativo_atual and dados_ativo_atual.get('Cod Base Bem'):
+                        dados_processados.append(dados_ativo_atual)
+
+                    dados_ativo_atual = {
+                        col: None for col in colunas_desejadas}
                     dados_ativo_atual['Filial'] = filial_atual
                     dados_ativo_atual['Cod Base Bem'] = str(
                         row.iloc[0]).strip() if pd.notna(row.iloc[0]) else None
@@ -136,7 +138,10 @@ def processar_planilha(file):
                         row.iloc[6]).strip() if pd.notna(row.iloc[6]) else None
                     continue
 
-                # Extrai outros campos baseados em rótulos
+                if not dados_ativo_atual:
+                    continue
+
+                # Extração de dados baseada em rótulos na linha
                 if 'Centro de Custo:' in row_str:
                     dados_ativo_atual['C Custo'] = row_str.split(
                         'Centro de Custo:')[1].strip().split(' ')[0]
@@ -156,9 +161,7 @@ def processar_planilha(file):
                     dados_ativo_atual['ClVl Despesa'] = row_str.split(
                         'ClVl Despesa:')[1].strip().split(' ')[0]
 
-                # Processa a linha de valores monetários
                 if str(row.iloc[0]).strip() == 'R$':
-                    # Aumenta o range para capturar mais valores
                     valores = [converter_valor(v) for v in row.iloc[1:14]]
 
                     dados_ativo_atual.update({
@@ -176,7 +179,6 @@ def processar_planilha(file):
                         'Cor Dep Acum': valores[12] if len(valores) > 12 else 0,
                     })
 
-                    # Adiciona o valor residual calculado
                     valor_atualizado = dados_ativo_atual.get(
                         'Valor Atualizado', 0)
                     deprec_acumulada = dados_ativo_atual.get(
@@ -184,15 +186,12 @@ def processar_planilha(file):
                     dados_ativo_atual['Valor Residual'] = valor_atualizado - \
                         deprec_acumulada
 
-                    # Adiciona o registro completo à lista
-                    # Garante que só adicionamos registros de ativos válidos
                     if dados_ativo_atual.get('Cod Base Bem'):
                         dados_processados.append(dados_ativo_atual)
-                    dados_ativo_atual = {}  # Limpa para o próximo ativo
+                    dados_ativo_atual = {}
 
         if dados_processados:
             df_final = pd.DataFrame(dados_processados)
-            # Adiciona a coluna Categoria (usando Descr. Sint. como proxy, ajuste se necessário)
             df_final['Categoria'] = df_final['Descr. Sint.']
             df_final['Arquivo'] = file.name
             return corrigir_filiais_nao_identificadas(df_final), None
@@ -357,14 +356,11 @@ if uploaded_files:
         col4.metric("Valor Residual Total", formatar_valor(
             dados_filtrados["Valor Residual"].sum()))
 
-        ### ALTERAÇÃO ###
-        # Abas atualizadas para incluir as novas colunas
         tab1, tab2, tab3 = st.tabs(
             ["Dados Detalhados", "Análise por Filial", "Análise por Categoria"])
         with tab1:
             df_display = dados_filtrados.copy()
 
-            # Define a ordem desejada das colunas para exibição
             colunas_para_exibir = [
                 'Arquivo', 'Filial', 'C Custo', 'Cod Base Bem', 'Codigo Item', 'Tipo Ativo',
                 'Descr. Sint.', 'Tipo Depr.', 'Dt.Aquisicao', 'Data Baixa',
@@ -374,7 +370,6 @@ if uploaded_files:
                 'Corr Acum M1', 'Cor Dep Mes', 'Cor Dep Exer', 'Cor Dep Acum'
             ]
 
-            # Formata as colunas monetárias
             colunas_monetarias = [
                 'Vl Ampliac.1', 'Valor Original', 'Valor Atualizado', 'Deprec. no mes',
                 'Deprec. no Exerc.', 'Deprec. Acumulada', 'Valor Residual', 'Corre Mes M1', 'Corre Bal M1',
@@ -384,7 +379,6 @@ if uploaded_files:
                 if col in df_display.columns:
                     df_display[col] = df_display[col].apply(formatar_valor)
 
-            # Garante que todas as colunas existam antes de tentar exibi-las
             colunas_existentes = [
                 col for col in colunas_para_exibir if col in df_display.columns]
             st.dataframe(df_display[colunas_existentes],
@@ -469,8 +463,6 @@ if uploaded_files:
         with col_download1:
             output_excel = BytesIO()
             with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-                ### ALTERAÇÃO ###
-                # Garante que todas as colunas sejam exportadas
                 colunas_para_exportar = [
                     col for col in colunas_para_exibir if col in dados_filtrados.columns]
                 dados_filtrados[colunas_para_exportar].to_excel(
@@ -518,4 +510,4 @@ else:
     st.info("Aguardando o upload dos arquivos para iniciar o processamento.")
 
 st.markdown("---")
-st.caption("Desenvolvido para General Water | v31.0 - Suporte via Teams")
+st.caption("Desenvolvido para General Water | v32.0 - Suporte via Teams")
