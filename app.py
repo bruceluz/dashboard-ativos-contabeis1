@@ -75,94 +75,88 @@ def processar_planilha(file):
         xl = pd.ExcelFile(file)
         dados_processados = []
 
-        # Adiciona um expansor para os logs de depuração de cada arquivo
-        with st.expander(f"Logs de Depuração para '{file.name}'", expanded=False):
-            st.write(f"Iniciando processamento da aba: {xl.sheet_names[0]}...")
+        for sheet_name in xl.sheet_names:
+            sheet_df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
 
-            for sheet_name in xl.sheet_names:
-                sheet_df = pd.read_excel(
-                    xl, sheet_name=sheet_name, header=None)
+            conta_contabil_atual = "Não Identificado"
+            descricao_conta_atual = "Não Identificado"
 
-                conta_contabil_atual = "Não Identificado"
-                descricao_conta_atual = "Não Identificado"
-                item_temporario = None
+            # Dicionário para guardar o item em construção
+            item_em_construcao = {}
+            # Controle de estado para saber o que estamos procurando
+            # 0 = Nada, 1 = Procurando data, 2 = Procurando valores
+            estado = 0
 
-                for idx, row in sheet_df.iterrows():
-                    # Pula linhas completamente vazias
-                    if row.isnull().all():
+            for idx, row in sheet_df.iterrows():
+                if row.isnull().all():
+                    continue
+
+                num_colunas = len(row)
+
+                # 1. Identifica a linha da Conta Contábil
+                if num_colunas > 1 and pd.notna(row.iloc[0]) and str(row.iloc[0]).startswith('1.2.3.'):
+                    conta_contabil_atual = str(row.iloc[0]).strip()
+                    descricao_conta_atual = str(
+                        row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+                    item_em_construcao = {}  # Reseta tudo ao encontrar nova conta
+                    estado = 0
+                    continue
+
+                # >>> LÓGICA DE ESTADOS PARA CAPTURA MULTILINHA <<<
+
+                # ESTADO 0: Procurando a linha principal do item
+                if estado == 0:
+                    # A linha do item tem código de filial na col A e descrição na col F
+                    if num_colunas > 5 and pd.notna(row.iloc[0]) and str(row.iloc[0]).strip().isdigit() and pd.notna(row.iloc[5]):
+                        item_em_construcao = {
+                            'Arquivo': file.name,
+                            'Filial': str(row.iloc[0]).strip(),
+                            'Conta contábil': conta_contabil_atual,
+                            'Descrição da conta': descricao_conta_atual,
+                            'Código do item': str(row.iloc[2]).strip() if num_colunas > 2 and pd.notna(row.iloc[2]) else "",
+                            'Código do sub item': str(row.iloc[3]).strip() if num_colunas > 3 and pd.notna(row.iloc[3]) else "",
+                            'Descrição do item': str(row.iloc[5]).strip()
+                        }
+                        estado = 1  # Item encontrado, agora procure a data na próxima linha
                         continue
 
-                    num_colunas = len(row)
-
-                    # Log da linha que está sendo processada
-                    # st.write(f"Linha {idx+1}: {row.to_list()}") # Descomente para depuração extrema
-
-                    # 1. Identifica a linha da Conta Contábil
-                    if num_colunas > 1 and pd.notna(row.iloc[0]) and str(row.iloc[0]).startswith('1.2.3.'):
-                        conta_contabil_atual = str(row.iloc[0]).strip()
-                        descricao_conta_atual = str(
-                            row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
-                        item_temporario = None
-                        st.write(
-                            f"✅ Linha {idx+1}: Encontrada Conta Contábil - '{conta_contabil_atual}'")
-                        continue
-
-                    # 2. Identifica a linha principal do item
-                    if num_colunas > 7:
-                        # >>> AQUI ESTÁ A MUDANÇA PRINCIPAL <<<
-                        # Verifica se a coluna A é um número OU uma string contendo apenas dígitos.
-                        coluna_a_str = str(row.iloc[0]).strip()
-                        is_filial_code = False
-                        if pd.notna(row.iloc[0]):
-                            if isinstance(row.iloc[0], (int, float)):
-                                is_filial_code = True
-                            elif isinstance(row.iloc[0], str) and coluna_a_str.isdigit():
-                                is_filial_code = True
-
+                # ESTADO 1: Procurando a linha da data
+                if estado == 1:
+                    # A data de aquisição está na coluna H (índice 7)
+                    if num_colunas > 7 and pd.notna(row.iloc[7]):
                         data_aquisicao = pd.to_datetime(
                             row.iloc[7], errors='coerce')
-
-                        if is_filial_code and pd.notna(data_aquisicao):
-                            item_temporario = {
-                                'Arquivo': file.name,
-                                'Filial': coluna_a_str,
-                                'Conta contábil': conta_contabil_atual,
-                                'Descrição da conta': descricao_conta_atual,
-                                'Data de aquisição': data_aquisicao,
-                                'Código do item': str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) else "",
-                                'Código do sub item': str(row.iloc[3]).strip() if pd.notna(row.iloc[3]) else "",
-                                'Descrição do item': str(row.iloc[5]).strip() if pd.notna(row.iloc[5]) else ""
-                            }
-                            st.write(
-                                f"✅ Linha {idx+1}: Encontrada LINHA DE ITEM. Filial: '{coluna_a_str}'. Aguardando linha de valor...")
+                        if pd.notna(data_aquisicao):
+                            item_em_construcao['Data de aquisição'] = data_aquisicao
+                            estado = 2  # Data encontrada, agora procure os valores na próxima linha
                             continue
-                        # Log para falha na detecção de item
-                        elif is_filial_code and not pd.notna(data_aquisicao):
-                            st.write(
-                                f"⚠️ Linha {idx+1}: Potencial item, mas data na coluna H ('{row.iloc[7]}') é inválida.")
+                    # Se não encontrar a data onde esperado, o item é inválido. Reseta.
+                    item_em_construcao = {}
+                    estado = 0
 
-                    # 3. Identifica a linha de valores
-                    if item_temporario and num_colunas > 6 and pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() == 'R$':
-                        st.write(
-                            f"✅ Linha {idx+1}: Encontrada LINHA DE VALOR. Associando ao item anterior e salvando.")
-                        item_temporario['Valor original'] = converter_valor(
+                # ESTADO 2: Procurando a linha de valores
+                if estado == 2:
+                    # A linha de valores começa com 'R$' na coluna A
+                    if num_colunas > 6 and pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() == 'R$':
+                        item_em_construcao['Valor original'] = converter_valor(
                             row.iloc[2])
-                        item_temporario['Valor atualizado'] = converter_valor(
+                        item_em_construcao['Valor atualizado'] = converter_valor(
                             row.iloc[3])
-                        item_temporario['Deprec. do mês'] = converter_valor(
+                        item_em_construcao['Deprec. do mês'] = converter_valor(
                             row.iloc[4])
-                        item_temporario['Deprec. do exercício'] = converter_valor(
+                        item_em_construcao['Deprec. do exercício'] = converter_valor(
                             row.iloc[5])
-                        item_temporario['Deprec. Acumulada'] = converter_valor(
+                        item_em_construcao['Deprec. Acumulada'] = converter_valor(
                             row.iloc[6])
 
-                        dados_processados.append(item_temporario)
-                        item_temporario = None  # Reseta para o próximo item
-                        continue
+                        # Item completo, adiciona à lista!
+                        dados_processados.append(item_em_construcao)
+
+                    # Independentemente de ter encontrado os valores ou não, o ciclo para este item acabou. Reseta.
+                    item_em_construcao = {}
+                    estado = 0
 
         if dados_processados:
-            st.success(
-                f"Dados extraídos com sucesso de '{file.name}'. Total de {len(dados_processados)} registros.")
             df_final = pd.DataFrame(dados_processados)
             df_final['Valor Residual'] = df_final['Valor atualizado'] - \
                 df_final['Deprec. Acumulada']
