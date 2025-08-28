@@ -5,206 +5,215 @@ import warnings
 import plotly.express as px
 import urllib.parse
 from fpdf import FPDF
-import traceback
-import os
-import re
-from datetime import datetime
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 
-# Ignorar avisos para uma interface mais limpa
 warnings.filterwarnings('ignore')
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="Dashboard de Ativos Contábeis",
-    page_icon="📊",
+    page_icon=" ",
     layout="wide"
 )
 
 # --- INICIALIZAÇÃO DO SESSION STATE ---
 if 'figura_plotly' not in st.session_state:
     st.session_state.figura_plotly = None
+if 'dados_grafico' not in st.session_state:
+    st.session_state.dados_grafico = None
+if 'tipo_grafico' not in st.session_state:
+    st.session_state.tipo_grafico = None
+if 'eixo_x' not in st.session_state:
+    st.session_state.eixo_x = None
+if 'eixos_y' not in st.session_state:
+    st.session_state.eixos_y = None
 
-# --- CLASSE FPDF CUSTOMIZADA ---
+# --- FUNÇÕES DE LÓGICA (sem alteração) ---
 
 
-class PDF(FPDF):
-    def header(self):
-        # Tenta usar uma fonte específica, mas recorre a uma padrão se não encontrada
-        font_path = 'LiberationSans-Regular.ttf'
-        font_name = "LiberationSans"
-        fallback_font = "Arial"
+def padronizar_nome_filial(nome_filial):
+    if not isinstance(nome_filial, str):
+        return "Não Identificado"
+    nome_upper = nome_filial.upper().strip()
+    mapa_nomes = {
+        "GENERAL WATER": "General Water S/A", "GW S/A": "General Water S/A",
+        "G W AGUAS": "GW Águas", "GW ÁGUAS": "GW Águas",
+        "GW SANEAMENTO": "GW Saneamento", "GW SANEA": "GW Saneamento",
+        "GW SISTEMAS": "GW Sistemas", "GW SISTEM": "GW Sistemas",
+        "MATRIZ": "GW Sistemas Matriz"
+    }
+    return mapa_nomes.get(nome_upper, nome_filial)
 
-        if os.path.exists(font_path) and font_name not in self.font_families:
-            try:
-                self.add_font(font_name, "", font_path, uni=True)
-                self.add_font(font_name, "B", font_path, uni=True)
-                self.add_font(font_name, "I", font_path, uni=True)
-            except Exception:
-                st.warning(
-                    f"Não foi possível carregar a fonte '{font_name}'. Usando '{fallback_font}'.")
 
-        current_font = font_name if font_name in self.font_families else fallback_font
-
-        try:
-            self.image("logo_GW.png", x=10, y=8, w=40)
-        except FileNotFoundError:
-            self.set_font(current_font, "B", 12)
-            self.cell(40, 10, "General Water", 0, 0, 'L')
-
-        self.set_font(current_font, "B", 20)
-        self.cell(0, 10, "Relatório de Ativos Contábeis", 0, 1, 'C')
-        self.ln(15)
-
-    def footer(self):
-        self.set_y(-15)
-        font_name = "LiberationSans"
-        fallback_font = "Arial"
-        current_font = font_name if font_name in self.font_families else fallback_font
-        self.set_font(current_font, "I", 8)
-        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
-
-# --- FUNÇÕES DE LÓGICA ---
+def converter_valor(valor):
+    if pd.isna(valor):
+        return 0.0
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    try:
+        valor_str = str(valor).replace('R$', '').strip()
+        if ',' in valor_str and '.' in valor_str:
+            valor_str = valor_str.replace('.', '')
+        valor_str = valor_str.replace(',', '.')
+        return float(valor_str)
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def formatar_valor(valor):
-    """Formata um número para o padrão monetário brasileiro (R$)."""
     try:
         return f"R$ {float(valor):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
     except (ValueError, TypeError):
         return "R$ 0,00"
 
 
-def limpar_valor(valor_str):
-    """Converte uma string monetária (ex: '1.234,56') para float."""
+def corrigir_filiais_nao_identificadas(df_arquivo):
+    if df_arquivo.empty:
+        return df_arquivo
+    contagem_filiais = df_arquivo[df_arquivo['Filial']
+                                  != 'Não Identificado']['Filial'].mode()
+    if not contagem_filiais.empty:
+        filial_predominante = contagem_filiais[0]
+        df_arquivo['Filial'] = df_arquivo['Filial'].replace(
+            'Não Identificado', filial_predominante)
+    return df_arquivo
+
+
+def processar_planilha(file):
     try:
-        s = str(valor_str).strip()
-        if s in ('-', '', 'nan', 'None'):
-            return 0.0
-        # Remove caracteres não numéricos, exceto ponto, vírgula e sinal negativo
-        s = re.sub(r'[^\d,.-]', '', s)
-        # Padroniza para o formato americano (ponto como decimal) antes de converter
-        s = s.replace('.', '').replace(',', '.')
-        return float(s)
-    except (ValueError, AttributeError, TypeError):
-        return 0.0
-
-
-def processar_linhas_detalhadas(linhas_texto, nome_arquivo):
-    """Processa o conteúdo de um arquivo texto para extrair dados de ativos."""
-    dados_finais = []
-    conta_atual, descricao_conta_atual = "", ""
-    dados_item_atual = None
-
-    for linha in linhas_texto:
-        linha_strip = linha.strip()
-        if not linha_strip:
-            continue
-
-        try:
-            # Identifica linha de conta contábil (ex: "1.2.3.02.010001 ESTACAO...")
-            if '1.2.3.' in linha_strip and len(linha_strip.split()) >= 2:
-                partes = linha_strip.split()
-                for j, parte in enumerate(partes):
-                    if '1.2.3.' in parte:
-                        conta_atual = parte
-                        descricao_conta_atual = ' '.join(partes[j+1:])
-                        break
-
-            # Identifica linha de dados detalhados (começa com código numérico de filial)
-            elif linha_strip.split() and linha_strip.split()[0].isdigit() and len(linha_strip.split()) >= 8:
-                partes = linha_strip.split()
-                # Extrai os dados da linha do item
-                filial = partes[0]
-                cod_base_bem = partes[2]
-                codigo_item = partes[3]
-                # Junta a descrição que pode conter espaços
-                descr_sint = ' '.join(partes[5:-5])
-                data_aquisicao = partes[-5]
-
-                dados_item_atual = {
-                    "Arquivo": nome_arquivo, "Filial": filial,
-                    "Conta contábil": conta_atual, "Descrição da conta": descricao_conta_atual,
-                    "Data de aquisição": data_aquisicao, "Código do item": cod_base_bem,
-                    "Código do sub item": codigo_item, "Descrição do item": descr_sint,
-                    "Valor original": 0.0, "Valor atualizado": 0.0, "Deprec. do mês": 0.0,
-                    "Deprec. do exercício": 0.0, "Deprec. Acumulada": 0.0, "Valor Residual": 0.0
-                }
-
-            # Identifica linha de valores em R$ (vinculada ao item anterior)
-            elif linha_strip.startswith('R$') and dados_item_atual:
-                partes = linha_strip.split()
-                if len(partes) >= 8:
-                    dados_item_atual["Valor original"] = limpar_valor(
-                        partes[2])
-                    dados_item_atual["Valor atualizado"] = limpar_valor(
-                        partes[3])
-                    dados_item_atual["Deprec. do mês"] = limpar_valor(
-                        partes[4])
-                    dados_item_atual["Deprec. do exercício"] = limpar_valor(
-                        partes[5])
-                    dados_item_atual["Deprec. Acumulada"] = limpar_valor(
-                        partes[6])
-                    dados_item_atual["Valor Residual"] = dados_item_atual["Valor atualizado"] - \
-                        dados_item_atual["Deprec. Acumulada"]
-
-                    dados_finais.append(dados_item_atual)
-                # Reseta o item atual para evitar adicionar o mesmo item duas vezes
-                dados_item_atual = None
-
-        except (IndexError, ValueError):
-            # Se ocorrer um erro ao processar uma linha, reseta e continua
-            dados_item_atual = None
-            continue
-
-    return dados_finais
-
-# --- FUNÇÃO DE PROCESSAMENTO PRINCIPAL ---
-
-
-@st.cache_data
-def processar_planilha(file_content, file_name):
-    """Processa um arquivo (Excel ou Texto) e retorna um DataFrame."""
-    try:
-        # Lê o arquivo Excel, tratando todas as células como texto para evitar erros de tipo
-        df_raw = pd.read_excel(BytesIO(file_content),
-                               header=None, engine='openpyxl')
-        df_raw = df_raw.astype(str).fillna('')
-
-        # Concatena todas as colunas de cada linha em uma única string
-        linhas_texto = df_raw.apply(
-            lambda row: ' '.join(row.dropna()), axis=1).tolist()
-
-        dados_processados = processar_linhas_detalhadas(
-            linhas_texto, file_name)
-
+        xl = pd.ExcelFile(file)
+        dados_processados = []
+        for sheet_name in xl.sheet_names:
+            sheet_df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
+            categoria_atual, filial_atual = "Não Identificado", "Não Identificado"
+            for _, row in sheet_df.iterrows():
+                if pd.notna(row.iloc[0]) and str(row.iloc[0]).startswith('1.2.3.'):
+                    categoria_atual = str(row.iloc[1]).strip() if pd.notna(
+                        row.iloc[1]) else str(row.iloc[0]).strip()
+                elif pd.notna(row.iloc[0]) and 'Filial :' in str(row.iloc[0]):
+                    nome_extraido = str(row.iloc[0]).split(
+                        'Filial :')[-1].split(' - ')[-1].strip()
+                    filial_atual = padronizar_nome_filial(nome_extraido)
+                elif pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() == 'R$':
+                    valores = [converter_valor(v) for v in row.iloc[1:8]]
+                    valor_atualizado = valores[2] if len(valores) > 2 else 0
+                    deprec_acumulada = valores[5] if len(valores) > 5 else 0
+                    if valor_atualizado > 0:
+                        dados_processados.append({
+                            'Arquivo': file.name, 'Filial': filial_atual, 'Categoria': categoria_atual,
+                            'Valor Original': valores[1] if len(valores) > 1 else 0,
+                            'Valor Atualizado': valor_atualizado,
+                            'Deprec. no mês': valores[3] if len(valores) > 3 else 0,
+                            'Deprec. no Exercício': valores[4] if len(valores) > 4 else 0,
+                            'Deprec. Acumulada': deprec_acumulada,
+                            'Valor Residual': valor_atualizado - deprec_acumulada
+                        })
         if dados_processados:
             df_final = pd.DataFrame(dados_processados)
-            # Garante a ordem correta das colunas
-            colunas_ordenadas = [
-                'Arquivo', 'Filial', 'Conta contábil', 'Descrição da conta', 'Data de aquisição',
-                'Código do item', 'Código do sub item', 'Descrição do item',
-                'Valor original', 'Valor atualizado', 'Deprec. do mês',
-                'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual'
-            ]
-            df_final = df_final.reindex(
-                columns=colunas_ordenadas, fill_value="")
-            return df_final, None
-        else:
-            return pd.DataFrame(), f"Nenhum item de ativo detalhado foi encontrado em '{file_name}'."
+            return corrigir_filiais_nao_identificadas(df_final), None
+        return None, f"Nenhum dado relevante encontrado em {file.name}."
     except Exception as e:
-        return pd.DataFrame(), f"Erro crítico ao processar '{file_name}': {e}\n{traceback.format_exc()}"
+        return None, f"Erro crítico ao processar {file.name}: {e}"
 
 
-# --- INTERFACE DO USUÁRIO ---
-st.title("📊 Dashboard de Ativos Contábeis")
+def criar_pdf_completo(buffer, df_filtrado, dados_grafico, tipo_grafico, eixo_x, eixos_y):
+    pdf = FPDF(orientation='L', unit='mm', format='A4')
+    pdf.add_page()
+
+    try:
+        pdf.image("logo_GW.png", x=10, y=8, w=40)
+    except Exception:
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(40, 10, "General Water", 0, 1, 'L')
+    pdf.set_font("Arial", "B", 20)
+    pdf.cell(0, 10, "Relatório de Ativos Contábeis", 0, 1, 'C')
+    pdf.ln(15)
+
+    if dados_grafico is not None:
+        try:
+            fig, ax = plt.subplots(figsize=(11, 5))
+
+            if tipo_grafico in ['Barras', 'Linhas']:
+                # Para Matplotlib, é melhor ter o eixo X como índice para plotagem de múltiplas colunas
+                df_plot = dados_grafico.set_index(eixo_x)
+                df_plot.plot(
+                    kind='bar' if tipo_grafico == 'Barras' else 'line',
+                    ax=ax,
+                    rot=45,
+                    grid=True
+                )
+                ax.set_title(f'Análise por {eixo_x}')
+                ax.set_ylabel('Valores (R$)')
+                ax.yaxis.set_major_formatter(
+                    mticker.FuncFormatter(lambda x, p: f'R$ {x:,.0f}'))
+                ax.legend(title='Métricas')
+
+            elif tipo_grafico == 'Pizza':
+                metrica_unica = eixos_y[0]
+                ax.pie(
+                    dados_grafico[metrica_unica],
+                    labels=dados_grafico[eixo_x],
+                    autopct='%1.1f%%',
+                    startangle=90
+                )
+                ax.set_title(f'Distribuição de {metrica_unica} por {eixo_x}')
+                ax.axis('equal')
+
+            plt.tight_layout()
+
+            img_buffer = BytesIO()
+            fig.savefig(img_buffer, format='png', dpi=300)
+            img_buffer.seek(0)
+
+            pdf.set_font("Arial", "B", 14)
+            pdf.cell(0, 10, "Gráfico Analítico", 0, 1, 'L')
+            pdf.image(img_buffer, x=None, y=None, w=277)
+            pdf.ln(5)
+
+        except Exception as e:
+            pdf.set_font("Arial", "", 10)
+            pdf.cell(
+                0, 10, f"Nao foi possivel renderizar o grafico no PDF: {e}", 0, 1, 'L')
+        finally:
+            plt.close(fig)
+
+    pdf.set_font("Arial", "B", 14)
+    pdf.cell(0, 10, "Dados Agregados por Filial e Categoria", 0, 1, 'L')
+    pdf.ln(5)
+    colunas_para_somar = ['Valor Atualizado',
+                          'Deprec. Acumulada', 'Valor Residual']
+    df_agregado = df_filtrado.groupby(['Filial', 'Categoria'])[
+        colunas_para_somar].sum().reset_index()
+    for col in colunas_para_somar:
+        df_agregado[col] = df_agregado[col].apply(formatar_valor)
+    col_widths = {'Filial': 60, 'Categoria': 100, 'Valor Atualizado': 35,
+                  'Deprec. Acumulada': 40, 'Valor Residual': 35}
+    pdf.set_font("Arial", "B", 9)
+    for col_name in col_widths.keys():
+        pdf.cell(col_widths[col_name], 10, col_name, 1, 0, 'C')
+    pdf.ln()
+    pdf.set_font("Arial", "", 8)
+    for _, row in df_agregado.iterrows():
+        for col_name in col_widths.keys():
+            cell_text = str(row[col_name]).encode(
+                'latin-1', 'replace').decode('latin-1')
+            pdf.cell(col_widths[col_name], 10, cell_text, 1, 0, 'L')
+        pdf.ln()
+
+    pdf.output(buffer)
+
+
+# --- ESTRUTURA DA APLICAÇÃO ---
+st.title("Dashboard de Ativos Contábeis")
 
 with st.sidebar:
-    if os.path.exists("logo_GW.png"):
+    try:
         st.image("logo_GW.png", width=200)
-    else:
+    except Exception:
         st.title("General Water")
     st.header("Instruções")
-    st.info("1. **Carregue** um ou mais relatórios.\n2. **Aguarde** o processamento.\n3. **Use os filtros** para analisar.\n4. **Explore** os gráficos interativos.\n5. **Baixe** os dados ou o PDF.")
+    st.info("1. **Carregue** os arquivos.\n2. **Aguarde** o processamento.\n3. **Filtre** e analise os dados.\n4. **Explore** os gráficos interativos.\n5. **Baixe** o relatório.")
     st.header("Ajuda & Suporte")
     email1 = "bruce@generalwater.com.br"
     email2 = "nathalia.vidal@generalwater.com.br"
@@ -212,114 +221,189 @@ with st.sidebar:
     link_teams = f"https://teams.microsoft.com/l/chat/0/0?users={email1},{email2}&message={urllib.parse.quote(mensagem_inicial)}"
     st.markdown(f'<a href="{link_teams}" target="_blank" style="display: inline-block; padding: 10px 20px; background-color: #4B53BC; color: white; text-align: center; text-decoration: none; border-radius: 5px; font-weight: bold;">Abrir Chat no Teams</a>', unsafe_allow_html=True)
 
-uploaded_files = st.file_uploader("Escolha os arquivos de relatório de ativos", type=[
+uploaded_files = st.file_uploader("Escolha os arquivos Excel de ativos", type=[
                                   'xlsx', 'xls'], accept_multiple_files=True)
 
 if uploaded_files:
     all_data, errors = [], []
-    progress_bar = st.progress(0, text="Iniciando processamento...")
-
+    progress_bar = st.progress(0, text="Iniciando...")
     for i, file in enumerate(uploaded_files):
-        progress_text = f"Processando arquivo {i+1}/{len(uploaded_files)}: {file.name}"
-        progress_bar.progress(
-            (i + 1) / len(uploaded_files), text=progress_text)
-
-        file_content = file.getvalue()
-        dados, erro = processar_planilha(file_content, file.name)
-
+        progress_bar.progress((i + 1) / len(uploaded_files),
+                              text=f"Processando: {file.name}")
+        dados, erro = processar_planilha(file)
         if dados is not None and not dados.empty:
             all_data.append(dados)
         if erro:
             errors.append(erro)
 
-    progress_bar.empty()
-
-    # --- CORREÇÃO PRINCIPAL: SÓ PROSSEGUIR SE HOUVER DADOS ---
     if all_data:
         dados_combinados = pd.concat(all_data, ignore_index=True)
+        st.success(
+            f"Processamento concluído! {len(all_data)} arquivo(s) válidos.")
 
-        if not dados_combinados.empty:
-            st.success(
-                f"Processamento finalizado! {len(all_data)} arquivo(s) carregados, totalizando {len(dados_combinados):,} registros.")
+        col1, col2, col3 = st.columns(3)
+        arquivos_options = sorted(dados_combinados['Arquivo'].unique())
+        filiais_options = sorted(dados_combinados['Filial'].unique())
+        categorias_options = sorted(dados_combinados['Categoria'].unique())
+        with col1:
+            selecao_arquivo = st.multiselect(
+                "Arquivo:", ["Selecionar Todos"] + arquivos_options, default="Selecionar Todos")
+        with col2:
+            selecao_filial = st.multiselect(
+                "Filial:", ["Selecionar Todos"] + filiais_options, default="Selecionar Todos")
+        with col3:
+            selecao_categoria = st.multiselect(
+                "Categoria:", ["Selecionar Todos"] + categorias_options, default="Selecionar Todos")
 
-            st.markdown("### Filtros")
-            col1, col2, col3 = st.columns(3)
+        filtro_arquivo = arquivos_options if "Selecionar Todos" in selecao_arquivo else selecao_arquivo
+        filtro_filial = filiais_options if "Selecionar Todos" in selecao_filial else selecao_filial
+        filtro_categoria = categorias_options if "Selecionar Todos" in selecao_categoria else selecao_categoria
+        dados_filtrados = dados_combinados[
+            (dados_combinados['Arquivo'].isin(filtro_arquivo)) &
+            (dados_combinados['Filial'].isin(filtro_filial)) &
+            (dados_combinados['Categoria'].isin(filtro_categoria))
+        ]
 
-            # Criação segura das opções de filtro
-            arquivos_options = sorted(dados_combinados['Arquivo'].unique(
-            )) if 'Arquivo' in dados_combinados.columns else []
-            filiais_options = sorted(dados_combinados['Filial'].unique(
-            )) if 'Filial' in dados_combinados.columns else []
-            categorias_options = sorted(dados_combinados['Descrição da conta'].unique(
-            )) if 'Descrição da conta' in dados_combinados.columns else []
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Registros Filtrados", f"{len(dados_filtrados):,}")
+        col2.metric("Valor Total Atualizado", formatar_valor(
+            dados_filtrados["Valor Atualizado"].sum()))
+        col3.metric("Depreciação Acumulada", formatar_valor(
+            dados_filtrados["Deprec. Acumulada"].sum()))
+        col4.metric("Valor Residual Total", formatar_valor(
+            dados_filtrados["Valor Residual"].sum()))
 
-            with col1:
-                selecao_arquivo = st.multiselect(
-                    "Filtrar por Arquivo:", arquivos_options, default=arquivos_options)
-            with col2:
-                selecao_filial = st.multiselect(
-                    "Filtrar por Filial:", filiais_options, default=filiais_options)
-            with col3:
-                selecao_categoria = st.multiselect(
-                    "Filtrar por Descrição da Conta:", categorias_options, default=categorias_options)
+        # ### CÓDIGO DAS ABAS RESTAURADO ###
+        tab1, tab2, tab3 = st.tabs(
+            ["Dados Detalhados", "Análise por Filial", "Análise por Categoria"])
+        with tab1:
+            df_display = dados_filtrados.copy()
+            for col in ['Valor Original', 'Valor Atualizado', 'Deprec. no mês', 'Deprec. no Exercício', 'Deprec. Acumulada', 'Valor Residual']:
+                df_display[col] = df_display[col].apply(formatar_valor)
+            st.dataframe(df_display, use_container_width=True, height=500)
+        with tab2:
+            analise_filial = dados_filtrados.groupby('Filial').agg(Contagem=(
+                'Arquivo', 'count'), Valor_Total=('Valor Atualizado', 'sum')).reset_index()
+            analise_filial['Valor_Total'] = analise_filial['Valor_Total'].apply(
+                formatar_valor)
+            st.dataframe(analise_filial, use_container_width=True)
+        with tab3:
+            analise_categoria = dados_filtrados.groupby('Categoria').agg(Contagem=(
+                'Arquivo', 'count'), Valor_Total=('Valor Atualizado', 'sum')).reset_index()
+            analise_categoria['Valor_Total'] = analise_categoria['Valor_Total'].apply(
+                formatar_valor)
+            st.dataframe(analise_categoria, use_container_width=True)
+        # ### FIM DO BLOCO RESTAURADO ###
 
-            # Aplica os filtros ao DataFrame
-            dados_filtrados = dados_combinados[
-                (dados_combinados['Arquivo'].isin(selecao_arquivo)) &
-                (dados_combinados['Filial'].isin(selecao_filial)) &
-                (dados_combinados['Descrição da conta'].isin(
-                    selecao_categoria))
-            ]
+        st.markdown("---")
+        st.header("Gráfico Interativo")
 
-            st.markdown("### Resumo dos Dados Filtrados")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Registros Filtrados", f"{len(dados_filtrados):,}")
-            col2.metric("Valor Total Atualizado", formatar_valor(
-                dados_filtrados["Valor atualizado"].sum()))
-            col3.metric("Depreciação Acumulada", formatar_valor(
-                dados_filtrados["Deprec. Acumulada"].sum()))
-            col4.metric("Valor Residual Total", formatar_valor(
-                dados_filtrados["Valor Residual"].sum()))
+        opcoes_eixo_y = ["Valor Atualizado",
+                         "Deprec. Acumulada", "Valor Residual"]
+        col_graf1, col_graf2, col_graf3 = st.columns(3)
+        with col_graf1:
+            tipo_grafico = st.selectbox("Escolha o Tipo de Gráfico:", [
+                                        "Barras", "Pizza", "Linhas"])
+        with col_graf2:
+            eixo_x = st.selectbox("Agrupar por (Eixo X):", [
+                                  "Filial", "Categoria", "Arquivo"], key="eixo_x_selectbox")
+        with col_graf3:
+            if tipo_grafico == "Pizza":
+                eixos_y = st.selectbox(
+                    "Analisar Valor (Eixo Y):", opcoes_eixo_y, index=0)
+                eixos_y = [eixos_y]
+            else:
+                eixos_y = st.multiselect("Analisar Valores (Eixo Y):", opcoes_eixo_y, default=[
+                                         "Valor Atualizado", "Valor Residual"])
 
-            tab1, tab2, tab3 = st.tabs(
-                ["Dados Detalhados", "Análise por Filial", "Análise por Descrição da Conta"])
+        if not dados_filtrados.empty and eixo_x and eixos_y:
+            dados_agrupados = dados_filtrados.groupby(
+                eixo_x)[eixos_y].sum().reset_index()
 
-            with tab1:
-                df_display = dados_filtrados.copy()
-                colunas_formatar = ['Valor original', 'Valor atualizado', 'Deprec. do mês',
-                                    'Deprec. do exercício', 'Deprec. Acumulada', 'Valor Residual']
-                for col in colunas_formatar:
-                    if col in df_display.columns:
-                        df_display[col] = df_display[col].apply(formatar_valor)
-                st.dataframe(df_display, use_container_width=True, height=500)
+            fig_plotly = None
+            if tipo_grafico == "Barras":
+                dados_grafico_melted = pd.melt(dados_agrupados, id_vars=[
+                                               eixo_x], value_vars=eixos_y, var_name='Métrica', value_name='Valor')
+                fig_plotly = px.bar(dados_grafico_melted, x=eixo_x, y='Valor',
+                                    color='Métrica', text_auto='.2s', barmode='group')
+                fig_plotly.update_traces(textposition='outside')
+            elif tipo_grafico == "Linhas":
+                dados_grafico_melted = pd.melt(dados_agrupados, id_vars=[
+                                               eixo_x], value_vars=eixos_y, var_name='Métrica', value_name='Valor')
+                fig_plotly = px.line(
+                    dados_grafico_melted, x=eixo_x, y='Valor', color='Métrica', markers=True)
+            elif tipo_grafico == "Pizza":
+                metrica_unica = eixos_y[0]
+                fig_plotly = px.pie(
+                    dados_agrupados, names=eixo_x, values=metrica_unica, hole=0.3)
+                fig_plotly.update_traces(
+                    textposition='outside', textinfo='percent+label')
 
-            with tab2:
-                analise_filial = dados_filtrados.groupby('Filial').agg(
-                    Contagem_de_Itens=('Arquivo', 'count'),
-                    Valor_Total_Atualizado=('Valor atualizado', 'sum')
-                ).reset_index().sort_values(by='Valor_Total_Atualizado', ascending=False)
-                st.dataframe(analise_filial, use_container_width=True,
-                             column_config={"Valor_Total_Atualizado": st.column_config.NumberColumn(format="R$ %.2f")})
+            if fig_plotly:
+                fig_plotly.update_layout(title=f'Análise de {", ".join(eixos_y)} por {eixo_x}', uniformtext_minsize=8, uniformtext_mode='hide', margin=dict(
+                    t=80, b=50), plot_bgcolor='rgba(0,0,0,0)', legend_title_text='')
+                st.plotly_chart(fig_plotly, use_container_width=True)
 
-            with tab3:
-                analise_categoria = dados_filtrados.groupby('Descrição da conta').agg(
-                    Contagem_de_Itens=('Arquivo', 'count'),
-                    Valor_Total_Atualizado=('Valor atualizado', 'sum')
-                ).reset_index().sort_values(by='Valor_Total_Atualizado', ascending=False)
-                st.dataframe(analise_categoria, use_container_width=True,
-                             column_config={"Valor_Total_Atualizado": st.column_config.NumberColumn(format="R$ %.2f")})
-
-            # Adicione aqui o restante do seu código para gráficos e exportação...
-
+                st.session_state.dados_grafico = dados_agrupados
+                st.session_state.tipo_grafico = tipo_grafico
+                st.session_state.eixo_x = eixo_x
+                st.session_state.eixos_y = eixos_y
+            else:
+                st.session_state.dados_grafico = None
         else:
-            st.warning(
-                "Os arquivos foram processados, mas não foi possível extrair nenhum dado de ativo contábil válido. Verifique o formato dos arquivos.")
+            st.session_state.dados_grafico = None
+
+        st.markdown("---")
+        st.header("Exportar Relatório")
+
+        col_download1, col_download2 = st.columns(2)
+
+        with col_download1:
+            output_excel = BytesIO()
+            with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
+                dados_filtrados.to_excel(
+                    writer, sheet_name='Dados_Filtrados', index=False)
+            st.download_button(
+                label="📥 Baixar Relatório em Excel",
+                data=output_excel.getvalue(),
+                file_name="relatorio_ativos_filtrado.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+        with col_download2:
+            if st.session_state.dados_grafico is not None:
+                pdf_buffer = BytesIO()
+                criar_pdf_completo(
+                    pdf_buffer,
+                    dados_filtrados,
+                    st.session_state.dados_grafico,
+                    st.session_state.tipo_grafico,
+                    st.session_state.eixo_x,
+                    st.session_state.eixos_y
+                )
+                st.download_button(
+                    label="📄 Baixar Relatório Completo (PDF)",
+                    data=pdf_buffer.getvalue(),
+                    file_name="relatorio_completo.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            else:
+                st.download_button(
+                    label="📄 Baixar Relatório Completo (PDF)",
+                    data=b'',
+                    disabled=True,
+                    use_container_width=True,
+                    help="Gere um gráfico na tela para habilitar o download do PDF."
+                )
 
     if errors:
-        st.warning("Avisos e erros encontrados durante o processamento:")
-        for error_msg in errors:
-            st.error(error_msg)
-
+        st.warning("Alguns arquivos apresentaram problemas:", icon="❗")
+        for error in errors:
+            st.error(error)
 else:
-    st.info(
-        "Por favor, carregue um ou mais arquivos de relatório para iniciar a análise.")
+    st.info("Aguardando o upload dos arquivos para iniciar o processamento.")
+
+st.markdown("---")
+st.caption("Desenvolvido para General Water | v31.0 - Suporte via Teams")

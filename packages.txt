@@ -1,1 +1,1 @@
-fonts-liberation2
+chromium
