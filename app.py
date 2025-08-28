@@ -7,6 +7,7 @@ import urllib.parse
 from fpdf import FPDF
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+import re
 
 warnings.filterwarnings('ignore')
 
@@ -52,10 +53,9 @@ def converter_valor(valor):
     if isinstance(valor, (int, float)):
         return float(valor)
     try:
+        # Remove R$, espaços, e usa o ponto como separador de milhar e vírgula para decimal
         valor_str = str(valor).replace('R$', '').strip()
-        if ',' in valor_str and '.' in valor_str:
-            valor_str = valor_str.replace('.', '')
-        valor_str = valor_str.replace(',', '.')
+        valor_str = valor_str.replace('.', '').replace(',', '.')
         return float(valor_str)
     except (ValueError, TypeError):
         return 0.0
@@ -79,7 +79,7 @@ def corrigir_filiais_nao_identificadas(df_arquivo):
             'Não Identificado', filial_predominante)
     return df_arquivo
 
-# Função de processamento com a lógica de salvamento corrigida
+# ### LÓGICA DE PROCESSAMENTO COMPLETAMENTE REFEITA ###
 
 
 def processar_planilha(file):
@@ -87,116 +87,59 @@ def processar_planilha(file):
         xl = pd.ExcelFile(file)
         dados_processados = []
 
-        colunas_desejadas = [
-            'Filial', 'C Custo', 'Cod Base Bem', 'Codigo Item', 'Tipo Ativo',
-            'Descr. Sint.', 'Tipo Depr.', 'Dt.Aquisicao', 'Data Baixa',
-            'Quantidade', 'Num.Plaqueta', 'Item Despesa', 'ClVl Despesa',
-            'Vl Ampliac.1', 'Valor Original', 'Valor Atualizado', 'Deprec. no mes',
-            'Deprec. no Exerc.', 'Deprec. Acumulada', 'Corre Mes M1', 'Corre Bal M1',
-            'Corr Acum M1', 'Cor Dep Mes', 'Cor Dep Exer', 'Cor Dep Acum'
-        ]
-
         for sheet_name in xl.sheet_names:
             sheet_df = pd.read_excel(
                 xl, sheet_name=sheet_name, header=None, dtype=str)
 
             filial_atual = "Não Identificado"
-            dados_ativo_atual = {}
+            descricao_ativo_atual = "Não Identificado"
 
             for _, row in sheet_df.iterrows():
                 if row.isnull().all():
                     continue
 
+                # Captura a Filial
                 row_str = ' '.join(str(x) for x in row if pd.notna(x))
-
                 if 'Filial :' in row_str:
                     nome_extraido = row_str.split(
                         'Filial :')[-1].split(' - ')[-1].strip()
                     filial_atual = padronizar_nome_filial(nome_extraido)
                     continue
 
+                # Captura a descrição do ativo principal (ex: "INSTALACOES")
                 if str(row.iloc[0]).startswith('1.2.3.'):
-                    # Salva o ativo anterior antes de começar um novo
-                    if dados_ativo_atual and dados_ativo_atual.get('Cod Base Bem'):
-                        dados_processados.append(dados_ativo_atual)
-
-                    # Inicia um novo ativo
-                    dados_ativo_atual = {
-                        col: None for col in colunas_desejadas}
-                    dados_ativo_atual['Filial'] = filial_atual
-                    dados_ativo_atual['Cod Base Bem'] = str(
-                        row.iloc[0]).strip() if pd.notna(row.iloc[0]) else None
-                    dados_ativo_atual['Descr. Sint.'] = str(
-                        row.iloc[1]).strip() if pd.notna(row.iloc[1]) else None
-                    dados_ativo_atual['Dt.Aquisicao'] = str(
-                        row.iloc[3]).strip() if pd.notna(row.iloc[3]) else None
-                    dados_ativo_atual['Data Baixa'] = str(
-                        row.iloc[4]).strip() if pd.notna(row.iloc[4]) else None
-                    dados_ativo_atual['Quantidade'] = str(
-                        row.iloc[5]).strip() if pd.notna(row.iloc[5]) else None
-                    dados_ativo_atual['Num.Plaqueta'] = str(
-                        row.iloc[6]).strip() if pd.notna(row.iloc[6]) else None
+                    descricao_ativo_atual = str(row.iloc[1]).strip() if pd.notna(
+                        row.iloc[1]) else "Não Identificado"
                     continue
 
-                if not dados_ativo_atual:
-                    continue
+                # Tenta extrair o código do bem e o valor da linha
+                cod_base_bem = str(row.iloc[0]).strip(
+                ) if pd.notna(row.iloc[0]) else None
+                valor_original_str = str(row.iloc[1]).strip(
+                ) if pd.notna(row.iloc[1]) else None
 
-                if 'Centro de Custo:' in row_str:
-                    dados_ativo_atual['C Custo'] = row_str.split(
-                        'Centro de Custo:')[1].strip().split(' ')[0]
-                if 'Codigo do Item:' in row_str:
-                    dados_ativo_atual['Codigo Item'] = row_str.split(
-                        'Codigo do Item:')[1].strip().split(' ')[0]
-                if 'Tipo Ativo:' in row_str:
-                    dados_ativo_atual['Tipo Ativo'] = row_str.split(
-                        'Tipo Ativo:')[1].strip().split(' ')[0]
-                if 'Tipo Depreciacao:' in row_str:
-                    dados_ativo_atual['Tipo Depr.'] = row_str.split(
-                        'Tipo Depreciacao:')[1].strip().split(' ')[0]
-                if 'Item Despesa:' in row_str:
-                    dados_ativo_atual['Item Despesa'] = row_str.split(
-                        'Item Despesa:')[1].strip().split(' ')[0]
-                if 'ClVl Despesa:' in row_str:
-                    dados_ativo_atual['ClVl Despesa'] = row_str.split(
-                        'ClVl Despesa:')[1].strip().split(' ')[0]
-
-                if str(row.iloc[0]).strip() == 'R$':
-                    valores = [converter_valor(v) for v in row.iloc[1:14]]
-
-                    dados_ativo_atual.update({
-                        'Vl Ampliac.1': valores[0] if len(valores) > 0 else 0,
-                        'Valor Original': valores[1] if len(valores) > 1 else 0,
-                        'Valor Atualizado': valores[2] if len(valores) > 2 else 0,
-                        'Deprec. no mes': valores[3] if len(valores) > 3 else 0,
-                        'Deprec. no Exerc.': valores[4] if len(valores) > 4 else 0,
-                        'Deprec. Acumulada': valores[5] if len(valores) > 5 else 0,
-                        'Corre Mes M1': valores[7] if len(valores) > 7 else 0,
-                        'Corre Bal M1': valores[8] if len(valores) > 8 else 0,
-                        'Corr Acum M1': valores[9] if len(valores) > 9 else 0,
-                        'Cor Dep Mes': valores[10] if len(valores) > 10 else 0,
-                        'Cor Dep Exer': valores[11] if len(valores) > 11 else 0,
-                        'Cor Dep Acum': valores[12] if len(valores) > 12 else 0,
-                    })
-
-                    valor_atualizado = dados_ativo_atual.get(
-                        'Valor Atualizado', 0)
-                    deprec_acumulada = dados_ativo_atual.get(
-                        'Deprec. Acumulada', 0)
-                    dados_ativo_atual['Valor Residual'] = valor_atualizado - \
-                        deprec_acumulada
-
-            # ### CORREÇÃO CRÍTICA ###
-            # Salva o último ativo da planilha após o término do loop
-            if dados_ativo_atual and dados_ativo_atual.get('Cod Base Bem'):
-                dados_processados.append(dados_ativo_atual)
+                # Verifica se a linha parece ser uma linha de dados detalhados
+                # Condição: A primeira coluna deve ser um número (Cod Base Bem) e a segunda um valor monetário
+                if cod_base_bem and cod_base_bem.isdigit() and valor_original_str:
+                    valor_original = converter_valor(valor_original_str)
+                    if valor_original > 0:
+                        dados_processados.append({
+                            'Arquivo': file.name,
+                            'Filial': filial_atual,
+                            'Categoria': descricao_ativo_atual,
+                            'Cod Base Bem': cod_base_bem,
+                            'Valor Original': valor_original,
+                            # Adiciona colunas vazias para manter a estrutura
+                            'Valor Atualizado': valor_original,  # Assumindo que o valor atualizado é o mesmo
+                            'Deprec. Acumulada': 0,
+                            'Valor Residual': valor_original,
+                        })
 
         if dados_processados:
             df_final = pd.DataFrame(dados_processados)
-            df_final['Categoria'] = df_final['Descr. Sint.']
-            df_final['Arquivo'] = file.name
             return corrigir_filiais_nao_identificadas(df_final), None
 
-        return None, f"Nenhum dado relevante encontrado em {file.name}."
+        return None, f"Nenhum dado detalhado encontrado em {file.name}."
     except Exception as e:
         return None, f"Erro crítico ao processar {file.name}: {e}"
 
@@ -264,14 +207,14 @@ def criar_pdf_completo(buffer, df_filtrado, dados_grafico, tipo_grafico, eixo_x,
     pdf.set_font("Arial", "B", 14)
     pdf.cell(0, 10, "Dados Agregados por Filial e Categoria", 0, 1, 'L')
     pdf.ln(5)
-    colunas_para_somar = ['Valor Atualizado',
+    colunas_para_somar = ['Valor Original', 'Valor Atualizado',
                           'Deprec. Acumulada', 'Valor Residual']
     df_agregado = df_filtrado.groupby(['Filial', 'Categoria'])[
         colunas_para_somar].sum().reset_index()
     for col in colunas_para_somar:
         df_agregado[col] = df_agregado[col].apply(formatar_valor)
-    col_widths = {'Filial': 60, 'Categoria': 100, 'Valor Atualizado': 35,
-                  'Deprec. Acumulada': 40, 'Valor Residual': 35}
+    col_widths = {'Filial': 60, 'Categoria': 80, 'Valor Original': 40, 'Valor Atualizado': 40,
+                  'Deprec. Acumulada': 40, 'Valor Residual': 40}
     pdf.set_font("Arial", "B", 9)
     for col_name in col_widths.keys():
         pdf.cell(col_widths[col_name], 10, col_name, 1, 0, 'C')
@@ -322,7 +265,7 @@ if uploaded_files:
     if all_data:
         dados_combinados = pd.concat(all_data, ignore_index=True)
         st.success(
-            f"Processamento concluído! {len(all_data)} arquivo(s) válidos e {len(dados_combinados)} registros encontrados.")
+            f"Processamento concluído! {len(all_data)} arquivo(s) válidos e {len(dados_combinados)} registros detalhados encontrados.")
 
         col1, col2, col3 = st.columns(3)
         arquivos_options = sorted(dados_combinados['Arquivo'].unique())
@@ -349,8 +292,8 @@ if uploaded_files:
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Registros Filtrados", f"{len(dados_filtrados):,}")
-        col2.metric("Valor Total Atualizado", formatar_valor(
-            dados_filtrados["Valor Atualizado"].sum()))
+        col2.metric("Valor Total Original", formatar_valor(
+            dados_filtrados["Valor Original"].sum()))
         col3.metric("Depreciação Acumulada", formatar_valor(
             dados_filtrados["Deprec. Acumulada"].sum()))
         col4.metric("Valor Residual Total", formatar_valor(
@@ -362,18 +305,12 @@ if uploaded_files:
             df_display = dados_filtrados.copy()
 
             colunas_para_exibir = [
-                'Arquivo', 'Filial', 'C Custo', 'Cod Base Bem', 'Codigo Item', 'Tipo Ativo',
-                'Descr. Sint.', 'Tipo Depr.', 'Dt.Aquisicao', 'Data Baixa',
-                'Quantidade', 'Num.Plaqueta', 'Item Despesa', 'ClVl Despesa',
-                'Vl Ampliac.1', 'Valor Original', 'Valor Atualizado', 'Deprec. no mes',
-                'Deprec. no Exerc.', 'Deprec. Acumulada', 'Valor Residual', 'Corre Mes M1', 'Corre Bal M1',
-                'Corr Acum M1', 'Cor Dep Mes', 'Cor Dep Exer', 'Cor Dep Acum'
+                'Arquivo', 'Filial', 'Categoria', 'Cod Base Bem', 'Valor Original',
+                'Valor Atualizado', 'Deprec. Acumulada', 'Valor Residual'
             ]
 
             colunas_monetarias = [
-                'Vl Ampliac.1', 'Valor Original', 'Valor Atualizado', 'Deprec. no mes',
-                'Deprec. no Exerc.', 'Deprec. Acumulada', 'Valor Residual', 'Corre Mes M1', 'Corre Bal M1',
-                'Corr Acum M1', 'Cor Dep Mes', 'Cor Dep Exer', 'Cor Dep Acum'
+                'Valor Original', 'Valor Atualizado', 'Deprec. Acumulada', 'Valor Residual'
             ]
             for col in colunas_monetarias:
                 if col in df_display.columns:
@@ -386,13 +323,13 @@ if uploaded_files:
 
         with tab2:
             analise_filial = dados_filtrados.groupby('Filial').agg(Contagem=(
-                'Arquivo', 'count'), Valor_Total=('Valor Atualizado', 'sum')).reset_index()
+                'Arquivo', 'count'), Valor_Total=('Valor Original', 'sum')).reset_index()
             analise_filial['Valor_Total'] = analise_filial['Valor_Total'].apply(
                 formatar_valor)
             st.dataframe(analise_filial, use_container_width=True)
         with tab3:
             analise_categoria = dados_filtrados.groupby('Categoria').agg(Contagem=(
-                'Arquivo', 'count'), Valor_Total=('Valor Atualizado', 'sum')).reset_index()
+                'Arquivo', 'count'), Valor_Total=('Valor Original', 'sum')).reset_index()
             analise_categoria['Valor_Total'] = analise_categoria['Valor_Total'].apply(
                 formatar_valor)
             st.dataframe(analise_categoria, use_container_width=True)
@@ -400,7 +337,7 @@ if uploaded_files:
         st.markdown("---")
         st.header("Gráfico Interativo")
 
-        opcoes_eixo_y = ["Valor Atualizado",
+        opcoes_eixo_y = ["Valor Original", "Valor Atualizado",
                          "Deprec. Acumulada", "Valor Residual"]
         col_graf1, col_graf2, col_graf3 = st.columns(3)
         with col_graf1:
@@ -416,7 +353,7 @@ if uploaded_files:
                 eixos_y = [eixos_y]
             else:
                 eixos_y = st.multiselect("Analisar Valores (Eixo Y):", opcoes_eixo_y, default=[
-                                         "Valor Atualizado", "Valor Residual"])
+                                         "Valor Original"])
 
         if not dados_filtrados.empty and eixo_x and eixos_y:
             dados_agrupados = dados_filtrados.groupby(
@@ -470,7 +407,7 @@ if uploaded_files:
             st.download_button(
                 label="📥 Baixar Relatório em Excel",
                 data=output_excel.getvalue(),
-                file_name="relatorio_ativos_filtrado.xlsx",
+                file_name="relatorio_ativos_detalhado.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
@@ -510,4 +447,4 @@ else:
     st.info("Aguardando o upload dos arquivos para iniciar o processamento.")
 
 st.markdown("---")
-st.caption("Desenvolvido para General Water | v33.0 - Suporte via Teams")
+st.caption("Desenvolvido para General Water | v34.0 - Suporte via Teams")
